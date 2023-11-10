@@ -66,12 +66,26 @@ void configureIOParams(int inpDevice, int outDevice, PaStreamParameters* i, PaSt
     o->suggestedLatency = Pa_GetDeviceInfo(outDevice)->defaultLowInputLatency;
 }
 
-int main(int argc, char** argv)
+//void onRecordClicked(GtkButton* button, gpointer data)
+//{
+//    g_idle_add(record, data);
+//}
+
+void record(GtkWidget* widget, gpointer data)
 {
-    printf("\nStarted\n");
+    //gtk_label_set_text(label, "Recording...");
+
+    // Update GUI with label update?
+    //while (gtk_events_pending())
+    //{
+    //    gtk_main_iteration();
+    //}
+
+    // Record here
+    printf("\nrecord() - called\n");
     // Buffer to store samples
     double* samples = (double*)malloc(sizeof(double) * WINDOW_SIZE);
-    
+
     // Initialise PortAudio stream
     PaError err = Pa_Initialize();
     checkError(err);
@@ -90,21 +104,21 @@ int main(int argc, char** argv)
         printf("No available audio devices detected!\n");
         exit(0);
     }
-    
+
     // Else devices found - display
     const PaDeviceInfo* pDeviceInfo;
     for (int i = 0; i < numDevices; i++)
     {
         pDeviceInfo = Pa_GetDeviceInfo(i);
 
-        printf("-- DEVICE %d: --\n\tName: %s\n\tMax input channels: %d\n\tMax output channels: %d\n\tDefault sample rate: %f\n", 
-        i, 
-        pDeviceInfo->name, 
-        pDeviceInfo->maxInputChannels,
-        pDeviceInfo->maxOutputChannels,
-        pDeviceInfo->defaultSampleRate);
+        printf("-- DEVICE %d: --\n\tName: %s\n\tMax input channels: %d\n\tMax output channels: %d\n\tDefault sample rate: %f\n",
+            i,
+            pDeviceInfo->name,
+            pDeviceInfo->maxInputChannels,
+            pDeviceInfo->maxOutputChannels,
+            pDeviceInfo->defaultSampleRate);
     }
-    
+
     PaStreamParameters inputParams;
     PaStreamParameters outputParams;
 
@@ -115,7 +129,7 @@ int main(int argc, char** argv)
         printf("No default input device.\n");
         exit(0);
     }
-    
+
     // Use default output device
     int outDevice = Pa_GetDefaultOutputDevice();
     if (outDevice == paNoDevice)
@@ -123,7 +137,7 @@ int main(int argc, char** argv)
         printf("No default output device.\n");
         exit(0);
     }
-    
+
     configureIOParams(inpDevice, outDevice, &inputParams, &outputParams);
 
     // Open PortAudio stream
@@ -155,12 +169,12 @@ int main(int argc, char** argv)
         // Read & process samples
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
         checkError(err);
-        
+
         processSamples(samples);
-        
+
         times--;
     }
-    
+
     err = Pa_StopStream(pStream);
     checkError(err);
 
@@ -172,6 +186,49 @@ int main(int argc, char** argv)
     // Terminate PortAudio stream
     err = Pa_Terminate();
     checkError(err);
+}
 
-    return 0;
+void activate(GtkApplication* app, gpointer data)
+{
+    GtkWidget* pWindow;
+    GtkWidget* pButton;
+    GtkWidget* pRecordBox;
+
+    pWindow = gtk_application_window_new(app);
+
+    // Set the window position & default size
+    gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
+    gtk_window_set_default_size(GTK_WINDOW(pWindow), 1000, 800);
+    gtk_window_set_title(GTK_WINDOW(pWindow), "Sheet Music Automation");
+    gtk_window_set_resizable(GTK_WINDOW(pWindow), FALSE); // Non-resizable for now
+
+    // Add a button box for record button
+    pRecordBox = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_container_add(GTK_CONTAINER(pWindow), pRecordBox);
+
+    // Add the button and connect click event to record() func
+    pButton = gtk_button_new_with_label("Record");
+    g_signal_connect(pButton, "clicked", G_CALLBACK(record), NULL);
+    //g_signal_connect_swapped(pButton, "clicked", G_CALLBACK(gtk_widget_destroy), pWindow);
+    gtk_container_add(GTK_CONTAINER(pRecordBox), pButton);
+
+    // 2) Make the X button close the window correctly & ends program
+    g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+    // 3) Show window
+    gtk_widget_show_all(pWindow);
+}
+
+int main(int argc, char** argv)
+{
+    // Initialise and run GTK app
+    GtkApplication* app;
+    int result = 0;
+
+    app = gtk_application_new("pitch.detection", G_APPLICATION_FLAGS_NONE);
+    g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+    result = g_application_run(G_APPLICATION(app), argc, argv);
+    g_object_unref(app);
+
+    return (result);
 }
