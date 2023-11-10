@@ -68,6 +68,7 @@ void configureIOParams(int inpDevice, int outDevice, PaStreamParameters* i, PaSt
 
 int main(int argc, char** argv)
 {
+    printf("\nStarted\n");
     // Buffer to store samples
     double* samples = (double*)malloc(sizeof(double) * WINDOW_SIZE);
     

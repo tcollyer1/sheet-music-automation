@@ -11,7 +11,11 @@ install-pa:
 
 	sudo curl https://files.portaudio.com/archives/pa_stable_v190700_20210406.tgz -o "pa.tgz"
 	tar -xvzf ./pa.tgz -C lib
-	cd lib/portaudio && ./configure && $(MAKE)
+	cd lib/portaudio && ./configure 
+	cd lib/portaudio && sudo make
+	cd lib/portaudio && sudo make install
+	cd lib/portaudio && sudo ldconfig
+	rm -rf pa.tgz
 .PHONY: install-pa
 
 uninstall-pa:
