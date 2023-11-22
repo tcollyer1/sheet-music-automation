@@ -1,6 +1,6 @@
 EXEC = p
 
-CLIB = -lportaudio -lrt -pthread -lm -lasound `pkg-config --cflags gtk+-3.0 --libs gtk+-3.0`
+CLIB = -lportaudio -lrt -pthread -lasound `pkg-config --cflags gtk+-3.0 --libs gtk+-3.0` -lfftw3f -lm
 
 $(EXEC): main.c
 	gcc -o $@ $^ $(CLIB)
@@ -13,9 +13,13 @@ setup:
 	sudo curl https://files.portaudio.com/archives/pa_stable_v190700_20210406.tgz -o "pa.tgz"
 	tar -xvzf ./pa.tgz -C lib
 	cd lib/portaudio && ./configure && $(MAKE) -j
+	
+	sudo curl https://www.fftw.org/fftw-3.3.10.tar.gz -o "fftw3.gz"
+	tar -xvzf ./fftw3.gz -C lib
+	cd lib/fftw-3.3.10 && ./configure --enable-threads --enable-float --enable-openmp && sudo make && sudo make install
+	rm -rf fftw3.gz
+	
 	rm -rf pa.tgz
-	rm -rf lib/portaudio
-	rmdir lib
 .PHONY: setup
 
 uninstall-pa:

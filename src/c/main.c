@@ -4,11 +4,15 @@
 
 #include "../h/main.h"
 
+#define REAL 0
+#define IMAG 1
+
 #define SAMPLE_RATE         44100
 #define WINDOW_SIZE         1024
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
+#define BIN_SIZE            (SAMPLE_RATE / WINDOW_SIZE)
 
 
 void checkError(PaError err)
@@ -20,50 +24,69 @@ void checkError(PaError err)
     }
 }
 
-void set2ndOrderLowPassFilterParams(float maxFreq, float sampleRate, float* paramsA, float* paramsB)
-{
-    // Don't yet understand the maths here.
-    
-    // Calculate the cutoff frequency.
-    //
-    // (maxFreq / sampleRate) gives the limit multiplier.
-    // e.g. Max frequency of 22,050 Hz when the sample rate is 44,100 Hz
-    // gives a multiplier of 0.5, so we only want to analyse the first half
-    // of the data.
-    float v = 2 * M_PI * maxFreq / sampleRate;
-    
-    // Divided by 2 possibly to account for Nyquist frequency...?
-    float a = sin(v) / 2 * sqrt(2);
-    
-    // ???
-    float v1 = 1.0 + a;
-    
-    // ???
-    paramsA[0] = (-2 * cos(v)) / v1;
-    paramsA[1] = (1 - a) / v1;
-    
-    // ???
-    paramsB[0] = ((1 - cos(v)) / 2) / v1;
-    paramsB[1] = (1 - cos(v)) / v1;
-    paramsB[2] = paramsB[0];
+// FFTW3 complex array types are in the form
+//
+// typedef float fftwf_complex[2];
+//
+// where 0 = real, 1 = imaginary
+void convertToComplexArray(float* samples, fftwf_complex* complex, int length)
+{    
+    for (int i = 0; i < length; i++)
+    {
+        // Every odd sample is the imaginary part - fill with 0s for now
+        complex[i][IMAG] = 0.0f;
+        
+        // Every even sample is the real part
+        complex[i][REAL] = samples[i];
+    }
 }
 
-void lowPassData(float* pSample, float* mem, float* paramsA, float* paramsB)
+float calcMagnitude(float real, float imaginary)
 {
-    // Don't yet understand the maths here.
+    float magnitude = sqrt(real * real + imaginary * imaginary);
     
-    // Low-pass a sample here
+    return (magnitude);
+}
+
+void getPeak(fftwf_complex* result, float* peakFreq, int fftLen)
+{
+    float highest = 0.0f;
+    float current = 0.0f;
+    int peakBinNo = 0;
     
-    // ???
-    float temp = paramsB[0] * (*pSample) + paramsB[1] * mem[0] + paramsB[2] * mem[1] - paramsA[0] * mem[2] - paramsA[1] * mem[3];
+    for (int i = 0; i < fftLen; i++)
+    {
+        current = calcMagnitude(result[i][REAL], result[i][IMAG]);
+        
+        if (current > highest)
+        {
+            highest = current;
+            peakBinNo = i;
+        }
+    }
     
-    // ???
-    mem[1] = mem[0];
-    mem[0] = (*pSample);
-    mem[3] = mem[2];
-    mem[3] = temp;
+    printf("----\nPeak magnitude: %f\n", highest);
     
-    (*pSample) = temp;
+    (*peakFreq) = peakBinNo * BIN_SIZE;
+    
+    printf("Peak frequency obtained: %f\n", *peakFreq);
+}
+
+void lowPassData(float* input, float* output, int length, int cutoff)
+{
+    // Filter constant
+    float rc = 1.0 / (cutoff * 2 * M_PI);    
+    
+    float dt = 1.0 / SAMPLE_RATE;
+    
+    float alpha = dt / (rc + dt);
+    
+    output[0] = input[0];
+    
+    for (int i = 1; i < length; i++)
+    {
+        output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
+    }
 }
 
 void setUpHannWindow(float* windowData, int length)
@@ -112,14 +135,21 @@ void record(GtkWidget* widget, gpointer data)
     printf("\nrecord() - called\n");
     // Buffers to store data, window for windowing the data
     float samples[WINDOW_SIZE];
-    float samplesInverse[WINDOW_SIZE];
+    float lowPassedSamples[WINDOW_SIZE];
+    //~ float complexSamples[WINDOW_SIZE * 2];
     float window[WINDOW_SIZE];
     
-    // Don't understand what these are for...
-    float a[2];
-    float b[3];
-    float memA[4];
-    float memB[4];
+    // FFTW3 input and output array definitions, initialisation
+    fftwf_complex*   inp;
+    fftwf_complex*   outp;
+    fftwf_plan       plan;   // Contains all data needed for computing FFT
+    
+    inp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
+    outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
+    plan = fftwf_plan_dft_1d(WINDOW_SIZE, inp, outp, FFTW_FORWARD, FFTW_ESTIMATE);
+    
+    
+    
 
     // Initialise PortAudio stream
     PaError err = Pa_Initialize();
@@ -167,9 +197,8 @@ void record(GtkWidget* widget, gpointer data)
     // Configure input params for PortAudio stream
     configureInParams(inpDevice, &inputParams);
     
-    // Prepare window and params for low pass filter etc.
+    // Prepare window
     setUpHannWindow(window, WINDOW_SIZE);
-    set2ndOrderLowPassFilterParams(MAX_FREQUENCY, SAMPLE_RATE, a, b);
 
     // Open PortAudio stream
     printf("Opening stream\n");
@@ -192,7 +221,9 @@ void record(GtkWidget* widget, gpointer data)
     checkError(err);
 
     printf("Recording...\n");
-    int times = 100;
+    int times = 10;  
+    
+    float peakFrequency = 0.0f;  
     
     while (times) // To be replaced with until 'stop' button pressed
     {
@@ -208,12 +239,7 @@ void record(GtkWidget* widget, gpointer data)
         * For now, limit the range to two octaves from C3-C5, so a frequency
         * range of 130.8 Hz - 523.25 Hz
         */
-        for (int i = 0; i < WINDOW_SIZE; i++)
-        {
-            // Low pass twice (2nd order?)
-            lowPassData(&samples[i], memA, a, b);
-            lowPassData(&samples[i], memB, a, b);
-        }
+        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -229,13 +255,16 @@ void record(GtkWidget* widget, gpointer data)
         * signal, so to circumvent this we apply a windowing function 
         * to reduce the amplitude of the discontinuities in the waveform.
         */
-        setWindow(window, samples, WINDOW_SIZE);
+        setWindow(window, lowPassedSamples, WINDOW_SIZE);
+        
+        // Convert to FFTW3 complex array
+        convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
-        // ...
+        fftwf_execute(plan);
         
         // Find peaks
-        // ...
+        getPeak(outp, &peakFrequency, WINDOW_SIZE);
 
         times--;
     }
