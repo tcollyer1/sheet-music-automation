@@ -20,6 +20,7 @@ void	lowPassData(float* input, float* output, int length, int cutoff);
 void 	setUpHannWindow(float* windowData, int length);
 void 	setWindow(float* windowData, float* samples, int length);
 float 	calcMagnitude(float real, float imaginary);
-void	getPeak(fftwf_complex* result, float* peakFreq, int fftLen);
+void	getPeak(fftwf_complex* result, float peakFreq, int fftLen, float* avgFreq, int* count);
+void 	getPitch(float* freq);
 
 #endif
