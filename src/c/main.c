@@ -14,13 +14,31 @@
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
 #define BIN_SIZE            (SAMPLE_RATE / WINDOW_SIZE)
 
+// For now, manually establish notes and corresponding
+// frequencies
+char* notes[25] = 
+{ 
+    "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "Bb3", "B3",
+    "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "Bb4", "B4",
+    "C5"
+};
+
+// Add C#5 purely for upper bound checking in case the note detected is a C5
+float frequencies[26] = 
+{
+    // C    // C#   // D    // D#   // E    // F    // F#   // G    // G#   // A    // Bb   // B
+    130.81, 138.59, 146.83, 155.56, 164.81, 174.61, 185.00, 196.00, 207.65, 220.00, 233.08, 246.94,
+    261.63, 277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88,
+    523.25, 554.37
+};
+
 
 void checkError(PaError err)
 {
     if (err != paNoError)
     {
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        exit(1);
+        exit(-1);
     }
 }
 
@@ -41,6 +59,7 @@ void convertToComplexArray(float* samples, fftwf_complex* complex, int length)
     }
 }
 
+// Calculates magnitude
 float calcMagnitude(float real, float imaginary)
 {
     float magnitude = sqrt(real * real + imaginary * imaginary);
@@ -48,7 +67,51 @@ float calcMagnitude(float real, float imaginary)
     return (magnitude);
 }
 
-void getPeak(fftwf_complex* result, float* peakFreq, int fftLen)
+// Prints the (estimated) pitch of a note (needs refining) based on a frequency.
+void getPitch(float* freq)
+{
+    char* pitch = NULL;
+    int found = 0;
+    
+    float lastFreq = 0.0f;
+    
+    // 25 notes in range C3-C5
+    for (int i = 0; i < 25; i++)
+    {
+        if (i != 0)
+        {
+            lastFreq = frequencies[i-1];
+        }
+        
+        if (*freq > lastFreq && *freq < frequencies[i+1])
+        {
+            if (abs(frequencies[i] - *freq) < abs(frequencies[i+1] - *freq))
+            {
+                pitch = notes[i];
+                found = 1;
+            }
+        }
+        
+        if (found == 1)
+        {
+            break;
+        }  
+    }
+    
+    if (pitch != NULL)
+    {
+        printf("\nNOTE DETECTED: %s\n", pitch);
+    }
+    // Frequency not in C3-C5 range
+    else
+    {
+        printf("\n[!] Note undetectable\n");
+        *freq = 0.0f;
+    }
+}
+
+// Gets the peak magnitude from the computed FFT output
+void getPeak(fftwf_complex* result, float peakFreq, int fftLen, float* avgFreq, int* count)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -65,13 +128,21 @@ void getPeak(fftwf_complex* result, float* peakFreq, int fftLen)
         }
     }
     
-    printf("----\nPeak magnitude: %f\n", highest);
+    peakFreq = peakBinNo * BIN_SIZE;
     
-    (*peakFreq) = peakBinNo * BIN_SIZE;
+    printf("\nPeak frequency obtained: %f\n", peakFreq);
     
-    printf("Peak frequency obtained: %f\n", *peakFreq);
+    // Estimate the pitch based on the highest frequency reported
+    getPitch(&peakFreq);
+    
+    if (peakFreq != 0.0f)
+    {
+        (*avgFreq) += peakFreq;
+        (*count)++;
+    }
 }
 
+// Not currently working properly
 void lowPassData(float* input, float* output, int length, int cutoff)
 {
     // Filter constant
@@ -89,6 +160,7 @@ void lowPassData(float* input, float* output, int length, int cutoff)
     }
 }
 
+// Sets up the window using the Hann function
 void setUpHannWindow(float* windowData, int length)
 {
     for (int i = 0; i < length; i++)
@@ -98,6 +170,7 @@ void setUpHannWindow(float* windowData, int length)
     }
 }
 
+// Applies Hann window to samples
 void setWindow(float* windowData, float* samples, int length)
 {
     for (int i = 0; i < length; i++)
@@ -112,7 +185,7 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
 {
     memset(i, 0, sizeof(i));
     
-    printf("Input device selected: %s\n", Pa_GetDeviceInfo(inpDevice)->name);
+    printf("Input device selected: %s (device %d)\n", Pa_GetDeviceInfo(inpDevice)->name, inpDevice);
 
     i->channelCount = CHANNELS; // 1
 
@@ -122,6 +195,7 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
+// Main function for processing microphone data.
 void record(GtkWidget* widget, gpointer data)
 {
     //gtk_label_set_text(label, "Recording...");
@@ -162,7 +236,7 @@ void record(GtkWidget* widget, gpointer data)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
-        exit(1);
+        exit(-1);
     }
     else if (numDevices == 0)
     {
@@ -187,7 +261,10 @@ void record(GtkWidget* widget, gpointer data)
     PaStreamParameters inputParams;
 
     // Use default input device
-    int inpDevice = Pa_GetDefaultInputDevice();
+    //int inpDevice = Pa_GetDefaultInputDevice();
+    
+    // Use device 8 (seems to be my microphone)
+    int inpDevice = 8;
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
@@ -210,7 +287,7 @@ void record(GtkWidget* widget, gpointer data)
         NULL, // Output parameters - not outputting data, so set to null
         SAMPLE_RATE,
         WINDOW_SIZE,
-        paClipOff, // Not outputting out of range samples, don't clip
+        paClipOff, // Not outputting out of range samples, don't clip?
         NULL, // No callback function, so null
         NULL // No user data here, is processed instead below, so null
     );
@@ -221,9 +298,12 @@ void record(GtkWidget* widget, gpointer data)
     checkError(err);
 
     printf("Recording...\n");
-    int times = 10;  
+    int times = 10;
     
-    float peakFrequency = 0.0f;  
+    float peakFrequency = 0.0f;
+    float avgFrequency = 0.0f;
+    int count = 0;
+ 
     
     while (times) // To be replaced with until 'stop' button pressed
     {
@@ -239,7 +319,7 @@ void record(GtkWidget* widget, gpointer data)
         * For now, limit the range to two octaves from C3-C5, so a frequency
         * range of 130.8 Hz - 523.25 Hz
         */
-        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -255,16 +335,18 @@ void record(GtkWidget* widget, gpointer data)
         * signal, so to circumvent this we apply a windowing function 
         * to reduce the amplitude of the discontinuities in the waveform.
         */
-        setWindow(window, lowPassedSamples, WINDOW_SIZE);
+        //setWindow(window, lowPassedSamples, WINDOW_SIZE);
+        setWindow(window, samples, WINDOW_SIZE);
         
         // Convert to FFTW3 complex array
-        convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
+        //convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
+        convertToComplexArray(samples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
         fftwf_execute(plan);
         
         // Find peaks
-        getPeak(outp, &peakFrequency, WINDOW_SIZE);
+        getPeak(outp, peakFrequency, WINDOW_SIZE, &avgFrequency, &count);
 
         times--;
     }
@@ -276,6 +358,16 @@ void record(GtkWidget* widget, gpointer data)
     checkError(err);
     
     printf("Stream closed.\n");
+    
+    printf("\navgFrequency = %f, count = %d\n", avgFrequency, count);
+    
+    // Average out collected frequencies (assuming only one pitch played for now)
+    avgFrequency /= count;
+    
+    printf("\n-------------------\n");
+    printf("\nOverall pitch:\n");
+    printf("\n-------------------\n");
+    getPitch(&avgFrequency);
 
     // --------------
 
