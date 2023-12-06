@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h> // M_PI, sqrt, sin, cos
+#include <pthread.h>
 
 #include "../h/main.h"
 
@@ -13,6 +14,12 @@
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
+
+
+int         running     = 0;
+
+pthread_t   procTask;
+
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -32,6 +39,11 @@ float frequencies[26] =
     523.25, 554.37
 };
 
+
+void stopRecording(GtkWidget* widget, gpointer data)
+{
+    running = 0;
+}
 
 void checkError(PaError err)
 {
@@ -197,8 +209,16 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
+void initRecording(GtkWidget* widget, gpointer data)
+{
+    printf("\ninitRecording() - called\n");
+    running = 1;
+
+    pthread_create(&procTask, NULL, record, NULL);
+}
+
 // Main function for processing microphone data.
-void record(GtkWidget* widget, gpointer data)
+void* record(void* args)
 {
     //gtk_label_set_text(label, "Recording...");
 
@@ -208,11 +228,9 @@ void record(GtkWidget* widget, gpointer data)
     //    gtk_main_iteration();
     //}
 
-    printf("\nrecord() - called\n");
     // Buffers to store data, window for windowing the data
     float samples[WINDOW_SIZE];
     float lowPassedSamples[WINDOW_SIZE];
-    //~ float complexSamples[WINDOW_SIZE * 2];
     float window[WINDOW_SIZE];
     
     // FFTW3 input and output array definitions, initialisation
@@ -223,8 +241,6 @@ void record(GtkWidget* widget, gpointer data)
     inp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     plan = fftwf_plan_dft_1d(WINDOW_SIZE, inp, outp, FFTW_FORWARD, FFTW_ESTIMATE);
-    
-    
     
 
     // Initialise PortAudio stream
@@ -299,15 +315,13 @@ void record(GtkWidget* widget, gpointer data)
     err = Pa_StartStream(pStream);
     checkError(err);
 
-    printf("Recording...\n");
-    int times = 10;
+    printf("--- Recording... ---\n");
     
-    //float peakFrequency = 0.0f;
     float avgFrequency = 0.0f;
     int count = 0;
  
-    
-    while (times) // To be replaced with until 'stop' button pressed
+    // Main processing loop
+    while (running)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
@@ -349,8 +363,6 @@ void record(GtkWidget* widget, gpointer data)
         
         // Find peaks
         getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
-
-        times--;
     }
 
     err = Pa_StopStream(pStream);
@@ -381,7 +393,8 @@ void record(GtkWidget* widget, gpointer data)
 void activate(GtkApplication* app, gpointer data)
 {
     GtkWidget* pWindow;
-    GtkWidget* pButton;
+    GtkWidget* pStartButton;
+    GtkWidget* pStopButton;
     GtkWidget* pRecordBox;
 
     pWindow = gtk_application_window_new(app);
@@ -397,10 +410,13 @@ void activate(GtkApplication* app, gpointer data)
     gtk_container_add(GTK_CONTAINER(pWindow), pRecordBox);
 
     // Add the button and connect click event to record() func
-    pButton = gtk_button_new_with_label("Record");
-    g_signal_connect(pButton, "clicked", G_CALLBACK(record), NULL);
+    pStartButton = gtk_button_new_with_label("Record");
+    pStopButton = gtk_button_new_with_label("Stop");
+    g_signal_connect(pStartButton, "clicked", G_CALLBACK(initRecording), NULL);
+    g_signal_connect(pStopButton, "clicked", G_CALLBACK(stopRecording), NULL);
     //g_signal_connect_swapped(pButton, "clicked", G_CALLBACK(gtk_widget_destroy), pWindow);
-    gtk_container_add(GTK_CONTAINER(pRecordBox), pButton);
+    gtk_container_add(GTK_CONTAINER(pRecordBox), pStartButton);
+    gtk_container_add(GTK_CONTAINER(pRecordBox), pStopButton);
 
     // 2) Make the X button close the window correctly & ends program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
