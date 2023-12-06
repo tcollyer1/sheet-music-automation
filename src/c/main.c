@@ -254,12 +254,12 @@ void* record(void* args)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
-        exit(-1);
+        return NULL;
     }
     else if (numDevices == 0)
     {
         printf("No available audio devices detected!\n");
-        exit(0);
+        return NULL;
     }
 
     // Devices found - display info
@@ -286,7 +286,7 @@ void* record(void* args)
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
-        exit(0);
+        return NULL;
     }
 
     // Configure input params for PortAudio stream
@@ -392,12 +392,12 @@ void* record(void* args)
 
 void activate(GtkApplication* app, gpointer data)
 {
-    GtkWidget* pWindow;
-    GtkWidget* pStartButton;
-    GtkWidget* pStopButton;
-    GtkWidget* pRecordBox;
+    GtkWidget* pWindow      = gtk_application_window_new(app);
+    GtkWidget* pStartButton = gtk_button_new_with_label("Record");
+    GtkWidget* pStopButton  = gtk_button_new_with_label("Stop");
 
-    pWindow = gtk_application_window_new(app);
+    // Create grid for button display
+    GtkWidget* pGrid = gtk_grid_new();
 
     // Set the window position & default size
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
@@ -405,23 +405,25 @@ void activate(GtkApplication* app, gpointer data)
     gtk_window_set_title(GTK_WINDOW(pWindow), "Sheet Music Automation");
     gtk_window_set_resizable(GTK_WINDOW(pWindow), FALSE); // Non-resizable for now
 
-    // Add a button box for record button
-    pRecordBox = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_container_add(GTK_CONTAINER(pWindow), pRecordBox);
+    gtk_grid_set_column_spacing(GTK_GRID(pGrid), 16);
+    gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
+    gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
 
-    // Add the button and connect click event to record() func
-    pStartButton = gtk_button_new_with_label("Record");
-    pStopButton = gtk_button_new_with_label("Stop");
+    // Add grid to the created window
+    gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
+
+    // Attach buttons to grid
+    gtk_grid_attach(GTK_GRID(pGrid), pStartButton, 1, 1, 1, 1);
+    gtk_grid_attach_next_to(GTK_GRID(pGrid), pStopButton, pStartButton, GTK_POS_RIGHT, 1, 1);
+
+    // Connect click events to callback functions
     g_signal_connect(pStartButton, "clicked", G_CALLBACK(initRecording), NULL);
     g_signal_connect(pStopButton, "clicked", G_CALLBACK(stopRecording), NULL);
-    //g_signal_connect_swapped(pButton, "clicked", G_CALLBACK(gtk_widget_destroy), pWindow);
-    gtk_container_add(GTK_CONTAINER(pRecordBox), pStartButton);
-    gtk_container_add(GTK_CONTAINER(pRecordBox), pStopButton);
 
-    // 2) Make the X button close the window correctly & ends program
+    // Make the X button close the window correctly & end program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
-    // 3) Show window
+    // Show window
     gtk_widget_show_all(pWindow);
 }
 
