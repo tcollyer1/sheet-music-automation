@@ -8,11 +8,11 @@
 #define IMAG 1
 
 #define SAMPLE_RATE         44100
-#define WINDOW_SIZE         1024
+#define WINDOW_SIZE         2048
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
-#define BIN_SIZE            (SAMPLE_RATE / WINDOW_SIZE)
+#define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -111,11 +111,13 @@ void getPitch(float* freq)
 }
 
 // Gets the peak magnitude from the computed FFT output
-void getPeak(fftwf_complex* result, float peakFreq, int fftLen, float* avgFreq, int* count)
+void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
 {
     float highest = 0.0f;
     float current = 0.0f;
     int peakBinNo = 0;
+    
+    float peakFreq = 0.0f;
     
     for (int i = 0; i < fftLen; i++)
     {
@@ -129,7 +131,7 @@ void getPeak(fftwf_complex* result, float peakFreq, int fftLen, float* avgFreq, 
     }
     
     peakFreq = peakBinNo * BIN_SIZE;
-    
+
     printf("\nPeak frequency obtained: %f\n", peakFreq);
     
     // Estimate the pitch based on the highest frequency reported
@@ -300,7 +302,7 @@ void record(GtkWidget* widget, gpointer data)
     printf("Recording...\n");
     int times = 10;
     
-    float peakFrequency = 0.0f;
+    //float peakFrequency = 0.0f;
     float avgFrequency = 0.0f;
     int count = 0;
  
@@ -346,7 +348,7 @@ void record(GtkWidget* widget, gpointer data)
         fftwf_execute(plan);
         
         // Find peaks
-        getPeak(outp, peakFrequency, WINDOW_SIZE, &avgFrequency, &count);
+        getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
 
         times--;
     }
