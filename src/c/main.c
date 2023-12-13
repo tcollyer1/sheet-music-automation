@@ -9,17 +9,16 @@
 #define IMAG 1
 
 #define SAMPLE_RATE         44100
-#define WINDOW_SIZE         2048
+#define WINDOW_SIZE         4096
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
 
-int         running     = 0;
+int             running     = 0;
 
-pthread_t   procTask;
-
+pthread_t       procTask;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -42,7 +41,11 @@ float frequencies[26] =
 
 void stopRecording(GtkWidget* widget, gpointer data)
 {
+    printf("\nstopRecording() - called\n");
     running = 0;
+    
+    // Doesn't work
+    //pthread_join(procTask, NULL);
 }
 
 void checkError(PaError err)
@@ -51,6 +54,42 @@ void checkError(PaError err)
     {
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
         exit(-1);
+    }
+}
+
+// Downsample the data and get the harmonic product spectrum output
+void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length)
+{
+    int outLength2 = getArrayLen(length, 2);
+    int outLength3 = getArrayLen(length, 3);
+    
+    // Downsample - compress spectrum twice, by 2 and by 3
+    float hps2[outLength2];
+    float hps3[outLength3];
+    
+    downsample(result, length, hps2, outLength2, 2);
+    downsample(result, length, hps3, outLength3, 3);
+    
+    for (int i = 0; i < outLength3; i++)
+    {
+        outResult[i] = result[i][REAL] * hps2[i] * hps3[i];
+        //outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f));
+    }
+}
+
+// Gets the array length for downsampled data depending on the
+// downsampling value (idx)
+int getArrayLen(int fftLen, int idx)
+{
+    int outLen = (int)ceil((float)((float)fftLen / idx));
+    return (outLen);
+}
+
+void downsample(const fftwf_complex* result, int length, float* out, int outLength, int idx)
+{
+    for (int i = 0; i < outLength; i++)
+    {
+        out[i] = result[i * idx][REAL];
     }
 }
 
@@ -122,6 +161,41 @@ void getPitch(float* freq)
     }
 }
 
+void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq, int* count)
+{
+    float highest = 0.0f;
+    float current = 0.0f;
+    int peakBinNo = 0;
+    
+    float peakFreq = 0.0f;
+    
+    for (int i = 0; i < len; i++)
+    {
+        // This is not correct (?)
+        current = calcMagnitude(dsResult[i], result[i][IMAG]);
+        //current = dsResult[i];
+        
+        if (current > highest)
+        {
+            highest = current;
+            peakBinNo = i;
+        }
+    }
+    
+    peakFreq = peakBinNo * BIN_SIZE;
+
+    printf("\nPeak frequency obtained: %f\n", peakFreq);
+    
+    // Estimate the pitch based on the highest frequency reported
+    getPitch(&peakFreq);
+    
+    if (peakFreq != 0.0f)
+    {
+        (*avgFreq) += peakFreq;
+        (*count)++;
+    }
+}
+
 // Gets the peak magnitude from the computed FFT output
 void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
 {
@@ -156,7 +230,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
     }
 }
 
-// Not currently working properly
+// Unsure if this does anything
 void lowPassData(float* input, float* output, int length, int cutoff)
 {
     // Filter constant
@@ -209,16 +283,19 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
-void initRecording(GtkWidget* widget, gpointer data)
+/*void initRecording(GtkWidget* widget, gpointer data)
 {
     printf("\ninitRecording() - called\n");
     running = 1;
 
     pthread_create(&procTask, NULL, record, NULL);
-}
+    
+    printf("\nThread created\n");
+}*/
 
 // Main function for processing microphone data.
-void* record(void* args)
+//void* record(void* args)
+void record(GtkWidget* widget, gpointer data)
 {
     //gtk_label_set_text(label, "Recording...");
 
@@ -254,12 +331,14 @@ void* record(void* args)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
-        return NULL;
+        //return NULL;
+        exit(-1);
     }
     else if (numDevices == 0)
     {
         printf("No available audio devices detected!\n");
-        return NULL;
+        //return NULL;
+        exit(-1);
     }
 
     // Devices found - display info
@@ -279,14 +358,15 @@ void* record(void* args)
     PaStreamParameters inputParams;
 
     // Use default input device
-    //int inpDevice = Pa_GetDefaultInputDevice();
+    int inpDevice = Pa_GetDefaultInputDevice();
     
     // Use device 8 (seems to be my microphone)
-    int inpDevice = 8;
+    //int inpDevice = 8;
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
-        return NULL;
+        //return NULL;
+        exit(-1);
     }
 
     // Configure input params for PortAudio stream
@@ -319,9 +399,13 @@ void* record(void* args)
     
     float avgFrequency = 0.0f;
     int count = 0;
- 
+    
+    int dsSize = 0;
+    
+    int temp = 10;
+
     // Main processing loop
-    while (running)
+    while (temp)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
@@ -335,7 +419,7 @@ void* record(void* args)
         * For now, limit the range to two octaves from C3-C5, so a frequency
         * range of 130.8 Hz - 523.25 Hz
         */
-        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -351,18 +435,28 @@ void* record(void* args)
         * signal, so to circumvent this we apply a windowing function 
         * to reduce the amplitude of the discontinuities in the waveform.
         */
-        //setWindow(window, lowPassedSamples, WINDOW_SIZE);
-        setWindow(window, samples, WINDOW_SIZE);
+        setWindow(window, lowPassedSamples, WINDOW_SIZE);
+        //setWindow(window, samples, WINDOW_SIZE);
         
         // Convert to FFTW3 complex array
-        //convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
-        convertToComplexArray(samples, inp, WINDOW_SIZE);
+        convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
+        //convertToComplexArray(samples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
         fftwf_execute(plan);
         
+        // Get new array size for downsampled data
+        dsSize = getArrayLen(WINDOW_SIZE, 3);
+        float dsResult[dsSize];
+        
+        // Get HPS (not fully functional)
+        harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
+        
         // Find peaks
-        getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
+        //getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
+        hps_getPeak(outp, dsResult, dsSize, &avgFrequency, &count);
+        
+        temp--;
     }
 
     err = Pa_StopStream(pStream);
@@ -387,7 +481,14 @@ void* record(void* args)
 
     // Terminate PortAudio stream
     err = Pa_Terminate();
+    printf("\nStream terminated.\n");
     checkError(err);
+    
+    fftwf_free(inp);
+    fftwf_free(outp);
+    pStream = NULL;
+    
+    printf("\nMemory freed.\n");
 }
 
 void activate(GtkApplication* app, gpointer data)
@@ -417,7 +518,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach_next_to(GTK_GRID(pGrid), pStopButton, pStartButton, GTK_POS_RIGHT, 1, 1);
 
     // Connect click events to callback functions
-    g_signal_connect(pStartButton, "clicked", G_CALLBACK(initRecording), NULL);
+    g_signal_connect(pStartButton, "clicked", G_CALLBACK(record), NULL);
     g_signal_connect(pStopButton, "clicked", G_CALLBACK(stopRecording), NULL);
 
     // Make the X button close the window correctly & end program
@@ -435,6 +536,7 @@ int main(int argc, char** argv)
 
     app = gtk_application_new("pitch.detection", G_APPLICATION_FLAGS_NONE);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+    
     result = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
 
