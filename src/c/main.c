@@ -134,9 +134,9 @@ void getPitch(float* freq)
             lastFreq = frequencies[i-1];
         }
         
-        if (*freq > lastFreq && *freq < frequencies[i+1])
+        if ((*freq) > lastFreq && (*freq) < frequencies[i + 1])
         {
-            if (abs(frequencies[i] - *freq) < abs(frequencies[i+1] - *freq))
+            if (abs(frequencies[i] - (*freq)) < abs(frequencies[i + 1] - (*freq)))
             {
                 pitch = notes[i];
                 found = 1;
@@ -185,6 +185,41 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     peakFreq = peakBinNo * BIN_SIZE;
 
     printf("\nPeak frequency obtained: %f\n", peakFreq);
+
+    int n = 0;
+    float surroundingFreqs[5];
+
+    if (peakBinNo < 2)
+    {
+        surroundingFreqs[0] = 0;
+        surroundingFreqs[1] = BIN_SIZE;
+        surroundingFreqs[2] = 2 * BIN_SIZE;
+        surroundingFreqs[3] = 3 * BIN_SIZE;
+        surroundingFreqs[4] = 4 * BIN_SIZE;
+    }
+    else if (peakBinNo > len - 3)
+    {
+        n = len - 1;
+        surroundingFreqs[0] = n * BIN_SIZE;
+        surroundingFreqs[1] = (n-1) * BIN_SIZE;
+        surroundingFreqs[2] = (n-2) * BIN_SIZE;
+        surroundingFreqs[3] = (n-3) * BIN_SIZE;
+        surroundingFreqs[4] = (n-4) * BIN_SIZE;
+    }
+    else
+    {
+        n = peakBinNo;
+
+        surroundingFreqs[0] = (n - 2) * BIN_SIZE;
+        surroundingFreqs[1] = (n - 1) * BIN_SIZE;
+        surroundingFreqs[2] = n * BIN_SIZE;
+        surroundingFreqs[3] = (n + 1) * BIN_SIZE;
+        surroundingFreqs[4] = (n + 2) * BIN_SIZE;
+    }
+
+    // Get equation for best quadratic fit of some of the neighbouring frequencies
+    // to the peak, and get the maximum value from these
+    quadraticRegr(surroundingFreqs);
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
@@ -194,6 +229,12 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
         (*avgFreq) += peakFreq;
         (*count)++;
     }
+}
+
+void quadraticRegr(float* values)
+{
+    // === APPLY QUADRATIC REGRESSION HERE ===
+
 }
 
 // Gets the peak magnitude from the computed FFT output
@@ -230,7 +271,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
     }
 }
 
-// Unsure if this does anything
+// Simple first order low pass filter with a cutoff frequency
 void lowPassData(float* input, float* output, int length, int cutoff)
 {
     // Filter constant
@@ -238,13 +279,16 @@ void lowPassData(float* input, float* output, int length, int cutoff)
     
     float dt = 1.0 / SAMPLE_RATE;
     
+    // Filter coefficient (alpha) - between 0 and 1, where 0 is no smoothing, 1 is maximum.
+    // Determines amount of smoothing to be applied (currently around 0.06...)
     float alpha = dt / (rc + dt);
     
     output[0] = input[0];
     
     for (int i = 1; i < length; i++)
     {
-        output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
+        //output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
+        output[i] = alpha * input[i] + (1 - alpha) * output[i - 1];
     }
 }
 

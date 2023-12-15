@@ -35,5 +35,6 @@ void 	hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFre
 
 void	getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count);
 void 	getPitch(float* freq);
+void	quadraticRegr(float* values);
 
 #endif
