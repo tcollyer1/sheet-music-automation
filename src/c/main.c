@@ -194,38 +194,38 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
 
     // Use peak frequency plus 4 surrounding frequencies
     // for quadratic regression input
-    //~ if (peakBinNo < 2)
-    //~ {
-        //~ surroundingFreqs[0] = 0;
-        //~ surroundingFreqs[1] = BIN_SIZE;
-        //~ surroundingFreqs[2] = 2 * BIN_SIZE;
-        //~ surroundingFreqs[3] = 3 * BIN_SIZE;
-        //~ surroundingFreqs[4] = 4 * BIN_SIZE;
-    //~ }
-    //~ else if (peakBinNo > len - 3)
-    //~ {
-        //~ n = len - 1;
-        //~ surroundingFreqs[0] = n * BIN_SIZE;
-        //~ surroundingFreqs[1] = (n-1) * BIN_SIZE;
-        //~ surroundingFreqs[2] = (n-2) * BIN_SIZE;
-        //~ surroundingFreqs[3] = (n-3) * BIN_SIZE;
-        //~ surroundingFreqs[4] = (n-4) * BIN_SIZE;
-    //~ }
-    //~ // Try to have peak in the centre
-    //~ else
-    //~ {
-        //~ n = peakBinNo;
+    if (peakBinNo < 2)
+    {
+        surroundingFreqs[0] = 0;
+        surroundingFreqs[1] = BIN_SIZE;
+        surroundingFreqs[2] = 2 * BIN_SIZE;
+        surroundingFreqs[3] = 3 * BIN_SIZE;
+        surroundingFreqs[4] = 4 * BIN_SIZE;
+    }
+    else if (peakBinNo > len - 3)
+    {
+        n = len - 1;
+        surroundingFreqs[0] = n * BIN_SIZE;
+        surroundingFreqs[1] = (n-1) * BIN_SIZE;
+        surroundingFreqs[2] = (n-2) * BIN_SIZE;
+        surroundingFreqs[3] = (n-3) * BIN_SIZE;
+        surroundingFreqs[4] = (n-4) * BIN_SIZE;
+    }
+    // Try to have peak in the centre
+    else
+    {
+        n = peakBinNo;
 
-        //~ surroundingFreqs[0] = (n - 2) * BIN_SIZE;
-        //~ surroundingFreqs[1] = (n - 1) * BIN_SIZE;
-        //~ surroundingFreqs[2] = n * BIN_SIZE;
-        //~ surroundingFreqs[3] = (n + 1) * BIN_SIZE;
-        //~ surroundingFreqs[4] = (n + 2) * BIN_SIZE;
-    //~ }
+        surroundingFreqs[0] = (n - 2) * BIN_SIZE;
+        surroundingFreqs[1] = (n - 1) * BIN_SIZE;
+        surroundingFreqs[2] = n * BIN_SIZE;
+        surroundingFreqs[3] = (n + 1) * BIN_SIZE;
+        surroundingFreqs[4] = (n + 2) * BIN_SIZE;
+    }
 
-    //~ // Get equation for best quadratic fit of some of the neighbouring frequencies
-    //~ // to the peak, and get the maximum value from these
-    //~ quadraticRegr(surroundingFreqs, 5);
+    // Get equation for best quadratic fit of some of the neighbouring frequencies
+    // to the peak, and get the maximum value from these
+    quadraticRegr(surroundingFreqs, 5);
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
@@ -237,10 +237,74 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     }
 }
 
-void quadraticRegr(float* values, int num)
+void quadraticRegr(const float* values, int num)
 {
     // === APPLY QUADRATIC REGRESSION HERE ===
+    int a = 0, b = 0, c = 0;
     
+    float x = 0.0f;
+    
+    float sumA[num], sumB[num], sumC[num], sumD[num], sumE[num], result[7];
+    
+    for (int i = 0; i < num; i++)
+    {
+        x = (float)i;
+        
+        sumA[i] = x * x;
+        sumB[i] = x * x * x;
+        sumC[i] = x * x * x * x;
+        sumD[i] = x * values[i];
+        sumE[i] = (x * x) * values[i];
+    }
+    
+    for (int i = 0; i < num; i++)
+    {
+        result[0] += (float)i;
+        result[1] += values[i];
+        result[2] += sumA[i];
+        result[3] += sumB[i];
+        result[4] += sumC[i];
+        result[5] += sumD[i];
+        result[6] += sumE[i];
+    }
+    
+    summations(result, num);
+}
+
+void summations(const float* result, int numItems)
+{
+    //float sum1[3], sum2[3], sum3[3];
+    
+    COEFFICIENTS sum1, sum2, sum3;
+    
+    float *a, *b, *c;
+    
+    sum1.a = result[4];
+    sum1.b = result[3];
+    sum1.c = result[2];
+    
+    sum2.a = result[3];
+    sum2.b = result[2];
+    sum2.c = result[0];
+    
+    sum3.a = result[2];
+    sum3.b = result[0];
+    sum3.c = (float)numItems;
+    
+    /*sum1 = a1 + b1 + c1;
+    sum2 = a2 + b2 + c2;
+    sum3 = a3 + b3 + c3;*/ 
+    
+    // Get coefficients
+    solve(sum1, sum2, sum3, a, b, c);
+    
+    // Use coefficients to get estimated peak frequency for this equation
+    // (x = -b/(2a) -> x being the new max freq)
+}
+
+void solve (COEFFICIENTS eq1, COEFFICIENTS eq2, COEFFICIENTS eq3, float* a, float* b, float* c)
+{
+    // Solve equation for coefficients
 }
 
 // Gets the peak magnitude from the computed FFT output

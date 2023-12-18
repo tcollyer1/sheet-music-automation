@@ -6,6 +6,13 @@
 #include <gtk/gtk.h>
 #include <fftw3.h>
 
+typedef struct 
+{
+    float a;
+    float b;
+    float c;
+} COEFFICIENTS;
+
 // PortAudio & GTK funcs
 void 	checkError(PaError err);
 void	configureInParams(int inpDevice, 
@@ -35,6 +42,8 @@ void 	hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFre
 
 void	getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count);
 void 	getPitch(float* freq);
-void	quadraticRegr(float* values, int num);
+void	quadraticRegr(const float* values, int num);
+void 	summations(const float* result, int numItems);
+void 	solve (COEFFICIENTS eq1, COEFFICIENTS eq2, COEFFICIENTS eq3, float* a, float* b, float* c);
 
 #endif
