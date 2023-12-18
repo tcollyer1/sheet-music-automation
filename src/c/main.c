@@ -1,6 +1,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h> // M_PI, sqrt, sin, cos
+#include <pthread.h>
 
 #include "../h/main.h"
 
@@ -8,11 +9,17 @@
 #define IMAG 1
 
 #define SAMPLE_RATE         44100
-#define WINDOW_SIZE         2048
+#define WINDOW_SIZE         4096
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
+#define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
+
+
+int             running     = 0;
+
+pthread_t       procTask;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -33,12 +40,60 @@ float frequencies[26] =
 };
 
 
+void stopRecording(GtkWidget* widget, gpointer data)
+{
+    printf("\nstopRecording() - called\n");
+    running = 0;
+    
+    // Doesn't work
+    //pthread_join(procTask, NULL);
+}
+
 void checkError(PaError err)
 {
     if (err != paNoError)
     {
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
         exit(-1);
+    }
+}
+
+// Downsample the data and get the harmonic product spectrum output
+void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length)
+{
+    int outLength2 = getArrayLen(length, 2);
+    int outLength3 = getArrayLen(length, 3);
+    int outLength4 = getArrayLen(length, 4);
+    
+    // Downsample - compress spectrum 3x, by 2, by 3 and by 4
+    float hps2[outLength2];
+    float hps3[outLength3];
+    float hps4[outLength4];
+    
+    downsample(result, length, hps2, outLength2, 2);
+    downsample(result, length, hps3, outLength3, 3);
+    downsample(result, length, hps4, outLength4, 4);
+    
+    for (int i = 0; i < outLength4; i++)
+    {
+        //outResult[i] = result[i][REAL] * hps2[i] * hps3[i] * hps4[i];
+        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f));
+    }
+}
+
+// Gets the array length for downsampled data depending on the
+// downsampling value (idx)
+int getArrayLen(int fftLen, int idx)
+{
+    int outLen = (int)ceil((float)((float)fftLen / idx));
+    return (outLen);
+}
+
+void downsample(const fftwf_complex* result, int length, float* out, int outLength, int idx)
+{
+    for (int i = 0; i < outLength; i++)
+    {
+        out[i] = result[i * idx][REAL];
     }
 }
 
@@ -83,9 +138,9 @@ void getPitch(float* freq)
             lastFreq = frequencies[i-1];
         }
         
-        if (*freq > lastFreq && *freq < frequencies[i+1])
+        if ((*freq) > lastFreq && (*freq) < frequencies[i + 1])
         {
-            if (abs(frequencies[i] - *freq) < abs(frequencies[i+1] - *freq))
+            if (abs(frequencies[i] - (*freq)) < abs(frequencies[i + 1] - (*freq)))
             {
                 pitch = notes[i];
                 found = 1;
@@ -110,6 +165,148 @@ void getPitch(float* freq)
     }
 }
 
+void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq, int* count)
+{
+    float highest = 0.0f;
+    float current = 0.0f;
+    int peakBinNo = 0;
+    
+    float peakFreq = 0.0f;
+    
+    for (int i = 0; i < len; i++)
+    {
+        //current = calcMagnitude(dsResult[i], result[i][IMAG]);
+        current = dsResult[i];
+        
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
+        {
+            highest = current;
+            peakBinNo = i;
+        }
+    }
+    
+    peakFreq = peakBinNo * BIN_SIZE;
+
+    printf("\nPeak frequency obtained: %f\n", peakFreq);
+
+    int n = 0;
+    float surroundingFreqs[5];
+
+    // Use peak frequency plus 4 surrounding frequencies
+    // for quadratic regression input
+    if (peakBinNo < 2)
+    {
+        surroundingFreqs[0] = 0;
+        surroundingFreqs[1] = BIN_SIZE;
+        surroundingFreqs[2] = 2 * BIN_SIZE;
+        surroundingFreqs[3] = 3 * BIN_SIZE;
+        surroundingFreqs[4] = 4 * BIN_SIZE;
+    }
+    else if (peakBinNo > len - 3)
+    {
+        n = len - 1;
+        surroundingFreqs[0] = n * BIN_SIZE;
+        surroundingFreqs[1] = (n-1) * BIN_SIZE;
+        surroundingFreqs[2] = (n-2) * BIN_SIZE;
+        surroundingFreqs[3] = (n-3) * BIN_SIZE;
+        surroundingFreqs[4] = (n-4) * BIN_SIZE;
+    }
+    // Try to have peak in the centre
+    else
+    {
+        n = peakBinNo;
+
+        surroundingFreqs[0] = (n - 2) * BIN_SIZE;
+        surroundingFreqs[1] = (n - 1) * BIN_SIZE;
+        surroundingFreqs[2] = n * BIN_SIZE;
+        surroundingFreqs[3] = (n + 1) * BIN_SIZE;
+        surroundingFreqs[4] = (n + 2) * BIN_SIZE;
+    }
+
+    // Get equation for best quadratic fit of some of the neighbouring frequencies
+    // to the peak, and get the maximum value from these
+    quadraticRegr(surroundingFreqs, 5);
+    
+    // Estimate the pitch based on the highest frequency reported
+    getPitch(&peakFreq);
+    
+    if (peakFreq != 0.0f)
+    {
+        (*avgFreq) += peakFreq;
+        (*count)++;
+    }
+}
+
+void quadraticRegr(const float* values, int num)
+{
+    // === APPLY QUADRATIC REGRESSION HERE ===
+    int a = 0, b = 0, c = 0;
+    
+    float x = 0.0f;
+    
+    float sumA[num], sumB[num], sumC[num], sumD[num], sumE[num], result[7];
+    
+    for (int i = 0; i < num; i++)
+    {
+        x = (float)i;
+        
+        sumA[i] = x * x;
+        sumB[i] = x * x * x;
+        sumC[i] = x * x * x * x;
+        sumD[i] = x * values[i];
+        sumE[i] = (x * x) * values[i];
+    }
+    
+    for (int i = 0; i < num; i++)
+    {
+        result[0] += (float)i;
+        result[1] += values[i];
+        result[2] += sumA[i];
+        result[3] += sumB[i];
+        result[4] += sumC[i];
+        result[5] += sumD[i];
+        result[6] += sumE[i];
+    }
+    
+    summations(result, num);
+}
+
+void summations(const float* result, int numItems)
+{
+    //float sum1[3], sum2[3], sum3[3];
+    
+    COEFFICIENTS sum1, sum2, sum3;
+    
+    float *a, *b, *c;
+    
+    sum1.a = result[4];
+    sum1.b = result[3];
+    sum1.c = result[2];
+    
+    sum2.a = result[3];
+    sum2.b = result[2];
+    sum2.c = result[0];
+    
+    sum3.a = result[2];
+    sum3.b = result[0];
+    sum3.c = (float)numItems;
+    
+    /*sum1 = a1 + b1 + c1;
+    sum2 = a2 + b2 + c2;
+    sum3 = a3 + b3 + c3;*/ 
+    
+    // Get coefficients
+    solve(sum1, sum2, sum3, a, b, c);
+    
+    // Use coefficients to get estimated peak frequency for this equation
+    // (x = -b/(2a) -> x being the new max freq)
+}
+
+void solve (COEFFICIENTS eq1, COEFFICIENTS eq2, COEFFICIENTS eq3, float* a, float* b, float* c)
+{
+    // Solve equation for coefficients
+}
+
 // Gets the peak magnitude from the computed FFT output
 void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
 {
@@ -123,7 +320,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
     {
         current = calcMagnitude(result[i][REAL], result[i][IMAG]);
         
-        if (current > highest)
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
         {
             highest = current;
             peakBinNo = i;
@@ -144,7 +341,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
     }
 }
 
-// Not currently working properly
+// Simple first order low pass filter with a cutoff frequency
 void lowPassData(float* input, float* output, int length, int cutoff)
 {
     // Filter constant
@@ -152,13 +349,16 @@ void lowPassData(float* input, float* output, int length, int cutoff)
     
     float dt = 1.0 / SAMPLE_RATE;
     
+    // Filter coefficient (alpha) - between 0 and 1, where 0 is no smoothing, 1 is maximum.
+    // Determines amount of smoothing to be applied (currently around 0.06...)
     float alpha = dt / (rc + dt);
     
     output[0] = input[0];
     
     for (int i = 1; i < length; i++)
     {
-        output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
+        //output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
+        output[i] = alpha * input[i] + (1 - alpha) * output[i - 1];
     }
 }
 
@@ -197,7 +397,18 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
+/*void initRecording(GtkWidget* widget, gpointer data)
+{
+    printf("\ninitRecording() - called\n");
+    running = 1;
+
+    pthread_create(&procTask, NULL, record, NULL);
+    
+    printf("\nThread created\n");
+}*/
+
 // Main function for processing microphone data.
+//void* record(void* args)
 void record(GtkWidget* widget, gpointer data)
 {
     //gtk_label_set_text(label, "Recording...");
@@ -208,11 +419,9 @@ void record(GtkWidget* widget, gpointer data)
     //    gtk_main_iteration();
     //}
 
-    printf("\nrecord() - called\n");
     // Buffers to store data, window for windowing the data
     float samples[WINDOW_SIZE];
     float lowPassedSamples[WINDOW_SIZE];
-    //~ float complexSamples[WINDOW_SIZE * 2];
     float window[WINDOW_SIZE];
     
     // FFTW3 input and output array definitions, initialisation
@@ -223,8 +432,6 @@ void record(GtkWidget* widget, gpointer data)
     inp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     plan = fftwf_plan_dft_1d(WINDOW_SIZE, inp, outp, FFTW_FORWARD, FFTW_ESTIMATE);
-    
-    
     
 
     // Initialise PortAudio stream
@@ -238,12 +445,14 @@ void record(GtkWidget* widget, gpointer data)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
+        //return NULL;
         exit(-1);
     }
     else if (numDevices == 0)
     {
         printf("No available audio devices detected!\n");
-        exit(0);
+        //return NULL;
+        exit(-1);
     }
 
     // Devices found - display info
@@ -263,14 +472,15 @@ void record(GtkWidget* widget, gpointer data)
     PaStreamParameters inputParams;
 
     // Use default input device
-    //int inpDevice = Pa_GetDefaultInputDevice();
+    int inpDevice = Pa_GetDefaultInputDevice();
     
     // Use device 8 (seems to be my microphone)
-    int inpDevice = 8;
+    //int inpDevice = 8;
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
-        exit(0);
+        //return NULL;
+        exit(-1);
     }
 
     // Configure input params for PortAudio stream
@@ -299,15 +509,17 @@ void record(GtkWidget* widget, gpointer data)
     err = Pa_StartStream(pStream);
     checkError(err);
 
-    printf("Recording...\n");
-    int times = 10;
+    printf("--- Recording... ---\n");
     
-    //float peakFrequency = 0.0f;
     float avgFrequency = 0.0f;
     int count = 0;
- 
     
-    while (times) // To be replaced with until 'stop' button pressed
+    int dsSize = 0;
+    
+    int temp = 10;
+
+    // Main processing loop
+    while (temp)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
@@ -321,7 +533,7 @@ void record(GtkWidget* widget, gpointer data)
         * For now, limit the range to two octaves from C3-C5, so a frequency
         * range of 130.8 Hz - 523.25 Hz
         */
-        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -337,20 +549,28 @@ void record(GtkWidget* widget, gpointer data)
         * signal, so to circumvent this we apply a windowing function 
         * to reduce the amplitude of the discontinuities in the waveform.
         */
-        //setWindow(window, lowPassedSamples, WINDOW_SIZE);
-        setWindow(window, samples, WINDOW_SIZE);
+        setWindow(window, lowPassedSamples, WINDOW_SIZE);
+        //setWindow(window, samples, WINDOW_SIZE);
         
         // Convert to FFTW3 complex array
-        //convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
-        convertToComplexArray(samples, inp, WINDOW_SIZE);
+        convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
+        //convertToComplexArray(samples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
         fftwf_execute(plan);
         
+        // Get new array size for downsampled data
+        dsSize = getArrayLen(WINDOW_SIZE, 4);
+        float dsResult[dsSize];
+        
+        // Get HPS
+        harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
+        
         // Find peaks
-        getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
-
-        times--;
+        //getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
+        hps_getPeak(outp, dsResult, dsSize, &avgFrequency, &count);
+        
+        temp--;
     }
 
     err = Pa_StopStream(pStream);
@@ -375,16 +595,24 @@ void record(GtkWidget* widget, gpointer data)
 
     // Terminate PortAudio stream
     err = Pa_Terminate();
+    printf("\nStream terminated.\n");
     checkError(err);
+    
+    fftwf_free(inp);
+    fftwf_free(outp);
+    pStream = NULL;
+    
+    printf("\nMemory freed.\n");
 }
 
 void activate(GtkApplication* app, gpointer data)
 {
-    GtkWidget* pWindow;
-    GtkWidget* pButton;
-    GtkWidget* pRecordBox;
+    GtkWidget* pWindow      = gtk_application_window_new(app);
+    GtkWidget* pStartButton = gtk_button_new_with_label("Record");
+    GtkWidget* pStopButton  = gtk_button_new_with_label("Stop");
 
-    pWindow = gtk_application_window_new(app);
+    // Create grid for button display
+    GtkWidget* pGrid = gtk_grid_new();
 
     // Set the window position & default size
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
@@ -392,20 +620,25 @@ void activate(GtkApplication* app, gpointer data)
     gtk_window_set_title(GTK_WINDOW(pWindow), "Sheet Music Automation");
     gtk_window_set_resizable(GTK_WINDOW(pWindow), FALSE); // Non-resizable for now
 
-    // Add a button box for record button
-    pRecordBox = gtk_button_box_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_container_add(GTK_CONTAINER(pWindow), pRecordBox);
+    gtk_grid_set_column_spacing(GTK_GRID(pGrid), 16);
+    gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
+    gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
 
-    // Add the button and connect click event to record() func
-    pButton = gtk_button_new_with_label("Record");
-    g_signal_connect(pButton, "clicked", G_CALLBACK(record), NULL);
-    //g_signal_connect_swapped(pButton, "clicked", G_CALLBACK(gtk_widget_destroy), pWindow);
-    gtk_container_add(GTK_CONTAINER(pRecordBox), pButton);
+    // Add grid to the created window
+    gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
 
-    // 2) Make the X button close the window correctly & ends program
+    // Attach buttons to grid
+    gtk_grid_attach(GTK_GRID(pGrid), pStartButton, 1, 1, 1, 1);
+    gtk_grid_attach_next_to(GTK_GRID(pGrid), pStopButton, pStartButton, GTK_POS_RIGHT, 1, 1);
+
+    // Connect click events to callback functions
+    g_signal_connect(pStartButton, "clicked", G_CALLBACK(record), NULL);
+    g_signal_connect(pStopButton, "clicked", G_CALLBACK(stopRecording), NULL);
+
+    // Make the X button close the window correctly & end program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
-    // 3) Show window
+    // Show window
     gtk_widget_show_all(pWindow);
 }
 
@@ -417,6 +650,7 @@ int main(int argc, char** argv)
 
     app = gtk_application_new("pitch.detection", G_APPLICATION_FLAGS_NONE);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
+    
     result = g_application_run(G_APPLICATION(app), argc, argv);
     g_object_unref(app);
 
