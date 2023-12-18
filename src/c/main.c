@@ -13,6 +13,7 @@
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
                                     // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
+#define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
 
@@ -62,18 +63,21 @@ void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length
 {
     int outLength2 = getArrayLen(length, 2);
     int outLength3 = getArrayLen(length, 3);
+    int outLength4 = getArrayLen(length, 4);
     
-    // Downsample - compress spectrum twice, by 2 and by 3
+    // Downsample - compress spectrum 3x, by 2, by 3 and by 4
     float hps2[outLength2];
     float hps3[outLength3];
+    float hps4[outLength4];
     
     downsample(result, length, hps2, outLength2, 2);
     downsample(result, length, hps3, outLength3, 3);
+    downsample(result, length, hps4, outLength4, 4);
     
-    for (int i = 0; i < outLength3; i++)
+    for (int i = 0; i < outLength4; i++)
     {
-        outResult[i] = result[i][REAL] * hps2[i] * hps3[i];
-        //outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f));
+        //outResult[i] = result[i][REAL] * hps2[i] * hps3[i] * hps4[i];
+        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f));
     }
 }
 
@@ -171,11 +175,10 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     
     for (int i = 0; i < len; i++)
     {
-        // This is not correct (?)
-        current = calcMagnitude(dsResult[i], result[i][IMAG]);
-        //current = dsResult[i];
+        //current = calcMagnitude(dsResult[i], result[i][IMAG]);
+        current = dsResult[i];
         
-        if (current > highest)
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
         {
             highest = current;
             peakBinNo = i;
@@ -189,37 +192,40 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     int n = 0;
     float surroundingFreqs[5];
 
-    if (peakBinNo < 2)
-    {
-        surroundingFreqs[0] = 0;
-        surroundingFreqs[1] = BIN_SIZE;
-        surroundingFreqs[2] = 2 * BIN_SIZE;
-        surroundingFreqs[3] = 3 * BIN_SIZE;
-        surroundingFreqs[4] = 4 * BIN_SIZE;
-    }
-    else if (peakBinNo > len - 3)
-    {
-        n = len - 1;
-        surroundingFreqs[0] = n * BIN_SIZE;
-        surroundingFreqs[1] = (n-1) * BIN_SIZE;
-        surroundingFreqs[2] = (n-2) * BIN_SIZE;
-        surroundingFreqs[3] = (n-3) * BIN_SIZE;
-        surroundingFreqs[4] = (n-4) * BIN_SIZE;
-    }
-    else
-    {
-        n = peakBinNo;
+    // Use peak frequency plus 4 surrounding frequencies
+    // for quadratic regression input
+    //~ if (peakBinNo < 2)
+    //~ {
+        //~ surroundingFreqs[0] = 0;
+        //~ surroundingFreqs[1] = BIN_SIZE;
+        //~ surroundingFreqs[2] = 2 * BIN_SIZE;
+        //~ surroundingFreqs[3] = 3 * BIN_SIZE;
+        //~ surroundingFreqs[4] = 4 * BIN_SIZE;
+    //~ }
+    //~ else if (peakBinNo > len - 3)
+    //~ {
+        //~ n = len - 1;
+        //~ surroundingFreqs[0] = n * BIN_SIZE;
+        //~ surroundingFreqs[1] = (n-1) * BIN_SIZE;
+        //~ surroundingFreqs[2] = (n-2) * BIN_SIZE;
+        //~ surroundingFreqs[3] = (n-3) * BIN_SIZE;
+        //~ surroundingFreqs[4] = (n-4) * BIN_SIZE;
+    //~ }
+    //~ // Try to have peak in the centre
+    //~ else
+    //~ {
+        //~ n = peakBinNo;
 
-        surroundingFreqs[0] = (n - 2) * BIN_SIZE;
-        surroundingFreqs[1] = (n - 1) * BIN_SIZE;
-        surroundingFreqs[2] = n * BIN_SIZE;
-        surroundingFreqs[3] = (n + 1) * BIN_SIZE;
-        surroundingFreqs[4] = (n + 2) * BIN_SIZE;
-    }
+        //~ surroundingFreqs[0] = (n - 2) * BIN_SIZE;
+        //~ surroundingFreqs[1] = (n - 1) * BIN_SIZE;
+        //~ surroundingFreqs[2] = n * BIN_SIZE;
+        //~ surroundingFreqs[3] = (n + 1) * BIN_SIZE;
+        //~ surroundingFreqs[4] = (n + 2) * BIN_SIZE;
+    //~ }
 
-    // Get equation for best quadratic fit of some of the neighbouring frequencies
-    // to the peak, and get the maximum value from these
-    quadraticRegr(surroundingFreqs);
+    //~ // Get equation for best quadratic fit of some of the neighbouring frequencies
+    //~ // to the peak, and get the maximum value from these
+    //~ quadraticRegr(surroundingFreqs, 5);
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
@@ -231,10 +237,10 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     }
 }
 
-void quadraticRegr(float* values)
+void quadraticRegr(float* values, int num)
 {
     // === APPLY QUADRATIC REGRESSION HERE ===
-
+    
 }
 
 // Gets the peak magnitude from the computed FFT output
@@ -250,7 +256,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
     {
         current = calcMagnitude(result[i][REAL], result[i][IMAG]);
         
-        if (current > highest)
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
         {
             highest = current;
             peakBinNo = i;
@@ -490,10 +496,10 @@ void record(GtkWidget* widget, gpointer data)
         fftwf_execute(plan);
         
         // Get new array size for downsampled data
-        dsSize = getArrayLen(WINDOW_SIZE, 3);
+        dsSize = getArrayLen(WINDOW_SIZE, 4);
         float dsResult[dsSize];
         
-        // Get HPS (not fully functional)
+        // Get HPS
         harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
         
         // Find peaks
