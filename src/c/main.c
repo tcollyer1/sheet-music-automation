@@ -212,7 +212,39 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     
     peakFreq = peakBinNo * BIN_SIZE;
 
-    printf("\nPeak frequency obtained: %f\n", peakFreq);
+    // -----------------------------------------------------
+    // Test - get peak plus just 2 surrounding frequencies
+    // and interpolate
+    // Delete 215-247 to revert
+    float frequencies[3];
+
+    // First bin (edge case)
+    if (peakBinNo == 0)
+    {
+        frequencies[0] = 0;
+        frequencies[1] = BIN_SIZE;
+        frequencies[0] = 2 * BIN_SIZE;
+    }
+    // Last bin (edge case)
+    else if (peakBinNo == len - 1)
+    {
+        int n = len - 1;
+        frequencies[0] = n * BIN_SIZE;
+        frequencies[1] = (n - 1) * BIN_SIZE;
+        frequencies[2] = (n - 2) * BIN_SIZE;
+    }
+    // Other bin (centralise actual value in centre)
+    else
+    {
+        int n = peakBinNo;
+
+        frequencies[0] = (n - 1) * BIN_SIZE;
+        frequencies[1] = n * BIN_SIZE;
+        frequencies[2] = (n + 1) * BIN_SIZE;
+    }
+
+    peakFreq += interpolate(frequencies[0], frequencies[1], frequencies[2]);
+    // -----------------------------------------------------
 
     /* // QUADRATIC REGRESSION
     int n = 0;
@@ -253,6 +285,8 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     // to the peak, and get the maximum value from these
     quadraticRegr(surroundingFreqs, 5);
     */
+
+    printf("\nPeak frequency obtained: %f\n", peakFreq);
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
@@ -262,6 +296,15 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
         (*avgFreq) += peakFreq;
         (*count)++;
     }
+}
+
+// Test function - interpolate just 3 values to get a better
+// peak estimate
+float interpolate(float first, float second, float last)
+{
+    float result = 0.5f * (last - first) / (2 * second - first - last);
+
+    return (result);
 }
 
 void quadraticRegr(const float* values, int num)
