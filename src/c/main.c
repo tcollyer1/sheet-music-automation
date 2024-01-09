@@ -16,6 +16,9 @@
 #define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
+#define NOISE_FLOOR         0.1f    // Ensure the amplitude is at least this value
+                                    // to help cancel out quieter noise
+
 
 int             running     = 0;
 
@@ -155,12 +158,12 @@ void getPitch(float* freq)
     
     if (pitch != NULL)
     {
-        printf("\nNOTE DETECTED: %s\n", pitch);
+        printf("NOTE DETECTED: %s\n", pitch);
     }
     // Frequency not in C3-C5 range
     else
     {
-        printf("\n[!] Note undetectable\n");
+        printf("[!] NO NOTE\n");
         *freq = 0.0f;
     }
 }
@@ -173,22 +176,45 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     
     float peakFreq = 0.0f;
     
+    float last = 0.0f;
+    int lastPeakBin = 0;
+    float otherPeakFreq = 0.0f;
+    
+    float threshold = 20.0f;    // +/- value for checking if an identified peak is
+                                // around half in Hz of another peak (octave errors)
+    
+    
     for (int i = 0; i < len; i++)
     {
         //current = calcMagnitude(dsResult[i], result[i][IMAG]);
         current = dsResult[i];
         
-        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY && current >= NOISE_FLOOR)
         {
+            last = highest;
+            lastPeakBin = peakBinNo;
+            
             highest = current;
             peakBinNo = i;
         }
     }
     
     peakFreq = peakBinNo * BIN_SIZE;
+    otherPeakFreq = lastPeakBin * BIN_SIZE;
+    
+    // In progress - to aid with octave errors
+    if (otherPeakFreq < (peakFreq / 2) + threshold 
+    && otherPeakFreq > (peakFreq / 2) - threshold
+    && fabs(highest - last) <= 0.33f)
+    {
+        printf("\nPeak could also be %f", otherPeakFreq);
+    }
+    
+    peakFreq = peakBinNo * BIN_SIZE;
 
     printf("\nPeak frequency obtained: %f\n", peakFreq);
 
+    /* // QUADRATIC REGRESSION
     int n = 0;
     float surroundingFreqs[5];
 
@@ -226,6 +252,7 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     // Get equation for best quadratic fit of some of the neighbouring frequencies
     // to the peak, and get the maximum value from these
     quadraticRegr(surroundingFreqs, 5);
+    */
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
