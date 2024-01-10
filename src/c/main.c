@@ -223,7 +223,7 @@ void getPitch(float* freq)
     }    
 }
 
-void hps_getPeak(fftwf_complex* result, float* dsResult, int len)
+void hps_getPeak(float* dsResult, int len)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -256,6 +256,7 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len)
     peakFreq = peakBinNo * BIN_SIZE;
     otherPeakFreq = lastPeakBin * BIN_SIZE;
     
+    // ------------------------------------------------------
     // In progress - to aid with octave errors
     if (otherPeakFreq < (peakFreq / 2) + threshold 
     && otherPeakFreq > (peakFreq / 2) - threshold
@@ -263,10 +264,27 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len)
     {
         printf("\nPeak could also be %f", otherPeakFreq);
     }
-    
-    peakFreq = peakBinNo * BIN_SIZE;
+    // Also try this
+    // ------------------------------------------------------    
+    /*int actualMax = 1;
+    int maxFreq = peakBinNo * 3 / 4; // Search up to 3/4 of the identified peak's bins (?)
 
-    // -----------------------------------------------------
+    for (int i = 2; i < maxFreq; i++
+    {
+        if (dsResult[i] > dsResult[actualMax])
+        {
+            actualMax = i;
+        }
+    }
+
+    if (abs(actualMax * 2 - peakBinNo) < 4)
+    {
+        if (dsResult[actualMax] / dsResult[peakBinNo] > 0.33f)
+        {
+            peakBinNo = actualMax;
+        }
+    }*/
+    // ------------------------------------------------------
     
     // Interpolate results if note detected
     if (peakFreq != 0.0f)
@@ -303,7 +321,7 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len)
         peakFreq = interpolate(frequencies[0], frequencies[1], frequencies[2]);
     }
     
-    // -----------------------------------------------------
+    // ------------------------------------------------------
 
     printf("\nPeak frequency obtained: %f\n", peakFreq);
     
@@ -311,12 +329,12 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len)
     getPitch(&peakFreq);
 }
 
-// Interpolate 3 values to get a better peak estimate
+// Interpolate 3 values to get a better peak estimate (won't have a huge impact - but good enough for now)
 float interpolate(float first, float second, float last)
 {
     //float result = 0.5f * (last - first) / (2 * second - first - last);
     
-    float result = first + 0.66f * (last-first);
+    float result = first + 0.66f * (last - first);
 
     return (result);
 }

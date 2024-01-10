@@ -30,7 +30,7 @@ float 	calcMagnitude(float real, float imaginary);
 int 	getArrayLen(int fftLen, int idx);
 void 	harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length);
 void 	downsample(const fftwf_complex* result, int length, float* out, int outLength, int idx);
-void 	hps_getPeak(fftwf_complex* result, float* dsResult, int len);
+void 	hps_getPeak(float* dsResult, int len);
 float   interpolate(float first, float second, float last);
 
 void	getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count);
