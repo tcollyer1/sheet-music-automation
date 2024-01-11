@@ -8,11 +8,12 @@
 #define REAL 0
 #define IMAG 1
 
-#define SAMPLE_RATE         44100
+#define SAMPLE_RATE         22050//44100
 #define WINDOW_SIZE         4096
 #define CHANNELS            1       // Mono input
-#define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
-                                    // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
+#define MAX_FREQUENCY       1109//555     // For now, limit the range to three piano octaves from  
+                                    // C3-C6, (but cap at C#6) so a frequency range of 
+                                    // 130.8 Hz - 1108.73 Hz
 #define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
@@ -32,20 +33,22 @@ pthread_mutex_t procLock;
 
 // For now, manually establish notes and corresponding
 // frequencies
-char* notes[25] = 
+char* notes[37] = 
 { 
     "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "Bb3", "B3",
     "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "Bb4", "B4",
-    "C5"
+    "C5", "C#5", "D5", "D#5", "E5", "F5", "F#5", "G5", "G#5", "A5", "Bb5", "B5",
+    "C6"
 };
 
-// Add C#5 purely for upper bound checking in case the note detected is a C5
-float frequencies[26] = 
+// Add C#6 purely for upper bound checking in case the note detected is a C6
+float frequencies[38] = 
 {
     // C    // C#   // D    // D#   // E    // F    // F#   // G    // G#   // A    // Bb   // B
-    130.81, 138.59, 146.83, 155.56, 164.81, 174.61, 185.00, 196.00, 207.65, 220.00, 233.08, 246.94,
-    261.63, 277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88,
-    523.25, 554.37
+    130.81,  138.59, 146.83, 155.56, 164.81, 174.61, 185.00, 196.00, 207.65, 220.00, 233.08, 246.94,
+    261.63,  277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88,
+    523.25,  554.37, 587.33, 622.25, 659.25, 698.46, 739.99, 783.99, 830.61, 880.00, 932.33, 987.77,
+    1046.50, 1108.73
 };
 
 void toggleRecording(GtkWidget* widget, gpointer data)
@@ -115,19 +118,22 @@ void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length
     int outLength2 = getArrayLen(length, 2);
     int outLength3 = getArrayLen(length, 3);
     int outLength4 = getArrayLen(length, 4);
+    int outLength5 = getArrayLen(length, 5);
     
-    // Downsample - compress spectrum 3x, by 2, by 3 and by 4
+    // Downsample - compress spectrum 4x, by 2, by 3, by 4 and by 5
     float hps2[outLength2];
     float hps3[outLength3];
     float hps4[outLength4];
+    float hps5[outLength5];
     
     downsample(result, length, hps2, outLength2, 2);
     downsample(result, length, hps3, outLength3, 3);
     downsample(result, length, hps4, outLength4, 4);
+    downsample(result, length, hps5, outLength5, 5);
     
-    for (int i = 0; i < outLength4; i++)
+    for (int i = 0; i < outLength5; i++)
     {
-        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f));
+        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f) * calcMagnitude(hps5[i], 0.0f));
     }
 }
 
@@ -175,6 +181,10 @@ float calcMagnitude(float real, float imaginary)
 // Prints the (estimated) pitch of a note based on a frequency.
 void getPitch(float* freq)
 {
+    static char* lastPitch = "N/A";
+    static int len = 0;
+    static int silenceLen = 0;
+    
     char* pitch = NULL;
     int found = 0;
     
@@ -182,8 +192,8 @@ void getPitch(float* freq)
     
     if (*freq < MAX_FREQUENCY)
     {
-        // 25 notes in range C3-C5
-        for (int i = 0; i < 25; i++)
+        // 37 notes in range C3-C6
+        for (int i = 0; i < 37; i++)
         {
             if (i != 0)
             {
@@ -208,12 +218,33 @@ void getPitch(float* freq)
         if (pitch != NULL)
         {
             printf("NOTE DETECTED: %s\n", pitch);
+            
+            silenceLen = 0;
+            
+            // Get if note is continuing from last iteration
+            if (strcmp(pitch, lastPitch) == 0)
+            {
+                //printf("(Same note)\n");
+                len++;
+            }
+            else
+            {
+                printf("(NEW note)\n");
+                lastPitch = pitch;
+                len = 1;
+            }
+            
+            //printf("Current length: %d\n", len);
         }
         // Assume background noise (so no note)
         else
         {
-            printf("[!] NO NOTE\n");
+            //printf("[!] NO NOTE\n");
             *freq = 0.0f;
+            
+            silenceLen++;
+            
+            //printf("SILENCE: %d\n", silenceLen);            
         }
     }
     else
@@ -245,31 +276,31 @@ void hps_getPeak(float* dsResult, int len)
         
         if (current > highest && i * BIN_SIZE > MIN_FREQUENCY && current >= NOISE_FLOOR)
         {
-            last = highest;
-            lastPeakBin = peakBinNo;
+            //last = highest;
+            //lastPeakBin = peakBinNo;
             
             highest = current;
             peakBinNo = i;
         }
     }
     
-    peakFreq = peakBinNo * BIN_SIZE;
-    otherPeakFreq = lastPeakBin * BIN_SIZE;
+    //peakFreq = peakBinNo * BIN_SIZE;
+    //otherPeakFreq = lastPeakBin * BIN_SIZE;
     
     // ------------------------------------------------------
     // In progress - to aid with octave errors
-    if (otherPeakFreq < (peakFreq / 2) + threshold 
+    /*if (otherPeakFreq < (peakFreq / 2) + threshold 
     && otherPeakFreq > (peakFreq / 2) - threshold
     && fabs(highest - last) <= 0.33f)
     {
         printf("\nPeak could also be %f", otherPeakFreq);
-    }
+    }*/
     // Also try this
     // ------------------------------------------------------    
     /*int actualMax = 1;
     int maxFreq = peakBinNo * 3 / 4; // Search up to 3/4 of the identified peak's bins (?)
 
-    for (int i = 2; i < maxFreq; i++
+    for (int i = 2; i < maxFreq; i++)
     {
         if (dsResult[i] > dsResult[actualMax])
         {
@@ -279,58 +310,50 @@ void hps_getPeak(float* dsResult, int len)
 
     if (abs(actualMax * 2 - peakBinNo) < 4)
     {
-        if (dsResult[actualMax] / dsResult[peakBinNo] > 0.33f)
+        if (dsResult[actualMax] / dsResult[peakBinNo] > 0.2f && actualMax * BIN_SIZE > MIN_FREQUENCY && dsResult[actualMax] >= NOISE_FLOOR)
         {
-            peakBinNo = actualMax;
+            //peakBinNo = actualMax;
+            printf("\n[!] NEW PEAK BIN SET\n");
         }
     }*/
     // ------------------------------------------------------
     
+    peakFreq = peakBinNo * BIN_SIZE;
+    
     // Interpolate results if note detected
     if (peakFreq != 0.0f)
     {
-        // Get peak plus just 2 surrounding frequencies
-        // and interpolate
-        float frequencies[3];
+        //printf("Amplitude: %f", highest);
+        
+        // Get 2 surrounding frequencies to the 
+        // peak and interpolate
+        float frequencies[2];
 
-        // First bin (edge case)
-        if (peakBinNo == 0)
-        {
-            frequencies[0] = 0;
-            frequencies[1] = BIN_SIZE;
-            frequencies[0] = 2 * BIN_SIZE;
-        }
-        // Last bin (edge case)
-        else if (peakBinNo == len - 1)
-        {
-            int n = len - 1;
-            frequencies[0] = n * BIN_SIZE;
-            frequencies[1] = (n - 1) * BIN_SIZE;
-            frequencies[2] = (n - 2) * BIN_SIZE;
-        }
-        // Other bin (centralise actual value in centre)
-        else
+        // Ensure peak is not at the edges of the window (should not occur anyway)
+        if (peakBinNo != 0 && peakBinNo != len - 1)
         {
             int n = peakBinNo;
 
             frequencies[0] = (n - 1) * BIN_SIZE;
-            frequencies[1] = n * BIN_SIZE;
-            frequencies[2] = (n + 1) * BIN_SIZE;
+            frequencies[1] = (n + 1) * BIN_SIZE;
         }
     
-        peakFreq = interpolate(frequencies[0], frequencies[1], frequencies[2]);
+        peakFreq = interpolate(frequencies[0], frequencies[1]);
     }
     
     // ------------------------------------------------------
 
-    printf("\nPeak frequency obtained: %f\n", peakFreq);
+    if (peakFreq != 0.0f)
+    {
+        printf("\nPeak frequency obtained: %f\n", peakFreq);
+    }
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
 }
 
 // Interpolate 3 values to get a better peak estimate (won't have a huge impact - but good enough for now)
-float interpolate(float first, float second, float last)
+float interpolate(float first, float last)
 {
     //float result = 0.5f * (last - first) / (2 * second - first - last);
     
@@ -591,8 +614,8 @@ void* record(void* args)
         // Carry out the FFT
         fftwf_execute(plan);
         
-        // Get new array size for downsampled data
-        dsSize = getArrayLen(WINDOW_SIZE, 4);
+        // Get new array size for downsampled data - 5 harmonics considered
+        dsSize = getArrayLen(WINDOW_SIZE, 5);
         float dsResult[dsSize];
         
         // Get HPS
@@ -631,7 +654,7 @@ void* record(void* args)
     printf("\nMemory freed.\n");
     
     pthread_mutex_lock(&procLock);
-    processing = 0; // Indicate to main thread that processing has now stopped
+    processing = 0; // Indicate to main (GTK) thread that processing has now stopped
     pthread_mutex_unlock(&procLock);
 }
 
