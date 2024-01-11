@@ -600,7 +600,7 @@ void* record(void* args)
         
         // Find peaks
         //getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
-        hps_getPeak(outp, dsResult, dsSize);
+        hps_getPeak(dsResult, dsSize);
         
         //temp--;
     }
