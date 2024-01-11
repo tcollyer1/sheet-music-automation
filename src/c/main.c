@@ -661,12 +661,36 @@ void* record(void* args)
 void activate(GtkApplication* app, gpointer data)
 {
     GtkWidget* pWindow          = gtk_application_window_new(app);
-    GtkWidget* pRandomButton    = gtk_button_new_with_label("Placeholder");
+
+    // Text boxes & labels
+    GtkWidget* time             = gtk_entry_new();
+    GtkWidget* tempo            = gtk_entry_new();
+    GtkWidget* key              = gtk_entry_new();
+    GtkWidget* fileLoc          = gtk_entry_new();
+
+    GtkWidget* timeLbl          = gtk_label_new("Time signature: ");
+    GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
+    GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
+    GtkWidget* fileLocLbl       = gtk_label_new("Time signature (N/N): ");
+
+    gtk_entry_set_max_length(GTK_ENTRY(time), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(tempo), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(key), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
+
+    gtk_label_set_xalign(GTK_LABEL(timeLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
     
     recBtn = gtk_button_new_with_label("Record");
 
-    // Create grid for button display
+    // Create containing box & grid for layout
+    GtkWidget* pBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget* pGrid = gtk_grid_new();
+
+    // Add grid to box with 20px padding from the edge
+    gtk_box_pack_start(GTK_BOX(pBox), pGrid, TRUE, TRUE, 16);
 
     // Set the window position & default size
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
@@ -678,12 +702,25 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
 
+    //gtk_grid_set_row_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
+    gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
+
     // Add grid to the created window
+    gtk_container_add(GTK_CONTAINER(pWindow), pBox);
     gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
 
-    // Attach buttons to grid
-    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 1, 1, 1, 1);
-    gtk_grid_attach_next_to(GTK_GRID(pGrid), pRandomButton, recBtn, GTK_POS_RIGHT, 1, 1);
+    // Attach textboxes, labels and button to grid
+    gtk_grid_attach(GTK_GRID(pGrid), timeLbl, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), tempoLbl, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), keyLbl, 1, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 4, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(pGrid), time, 3, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), tempo, 3, 2, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), key, 3, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 3, 4, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
 
     // Connect click events to callback functions
     g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), NULL);
