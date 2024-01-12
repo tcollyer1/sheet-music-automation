@@ -181,9 +181,10 @@ float calcMagnitude(float real, float imaginary)
 // Prints the (estimated) pitch of a note based on a frequency.
 void getPitch(float* freq)
 {
-    static char* lastPitch = "N/A";
-    static int len = 0;
-    static int silenceLen = 0;
+    //static char* lastPitch = "N/A";
+    //static int len = 0;
+    //static int silenceLen = 0;
+    //static float lastAmplitude = 0.0f;
     
     char* pitch = NULL;
     int found = 0;
@@ -219,20 +220,22 @@ void getPitch(float* freq)
         {
             printf("NOTE DETECTED: %s\n", pitch);
             
-            silenceLen = 0;
+            //silenceLen = 0;
             
             // Get if note is continuing from last iteration
-            if (strcmp(pitch, lastPitch) == 0)
+            /*if (strcmp(pitch, lastPitch) == 0)
             {
                 //printf("(Same note)\n");
                 len++;
+                
+                len = 1;
             }
             else
             {
-                printf("(NEW note)\n");
+                //printf("(NEW note)\n");
                 lastPitch = pitch;
                 len = 1;
-            }
+            }*/
             
             //printf("Current length: %d\n", len);
         }
@@ -242,7 +245,7 @@ void getPitch(float* freq)
             //printf("[!] NO NOTE\n");
             *freq = 0.0f;
             
-            silenceLen++;
+            //silenceLen++;
             
             //printf("SILENCE: %d\n", silenceLen);            
         }
@@ -254,6 +257,8 @@ void getPitch(float* freq)
     }    
 }
 
+// Obtain the peak from the downsampled harmonic product spectrum
+// output.
 void hps_getPeak(float* dsResult, int len)
 {
     float highest = 0.0f;
@@ -262,12 +267,11 @@ void hps_getPeak(float* dsResult, int len)
     
     float peakFreq = 0.0f;
     
-    float last = 0.0f;          // Last highest magnitude
-    int lastPeakBin = 0;        // Bin number of last highest magnitude
-    float otherPeakFreq = 0.0f; // Frequency of the bin at the last highest magnitude
+    static float prevAmplitude = 0.0f;
+    static int noteLen = 0;
+    static int silenceLen = 0;
     
-    float threshold = 20.0f;    // +/- value for checking if an identified peak is
-                                // around half in Hz of another peak (octave errors)
+    float threshold = 0.3f;
     
     
     for (int i = 0; i < len; i++)
@@ -275,10 +279,7 @@ void hps_getPeak(float* dsResult, int len)
         current = dsResult[i];
         
         if (current > highest && i * BIN_SIZE > MIN_FREQUENCY && current >= NOISE_FLOOR)
-        {
-            //last = highest;
-            //lastPeakBin = peakBinNo;
-            
+        {           
             highest = current;
             peakBinNo = i;
         }
@@ -323,7 +324,34 @@ void hps_getPeak(float* dsResult, int len)
     // Interpolate results if note detected
     if (peakFreq != 0.0f)
     {
-        //printf("Amplitude: %f", highest);
+        silenceLen = 0;
+        
+        printf("Amplitude: %f", highest);
+        
+        // If the amplitude of this tone is higher than previously, this MIGHT indicate
+        // a new note being played.
+        //
+        // When held, a note has a decay/transient period, where its amplitude reduces - 
+        // therefore this MIGHT indicate the same note being played, if detected again.
+        // Realistically, this will probably fluctuate a lot so will not be very accurate.
+        //
+        // As soon as the amplitude increases again, it could be that a new note is being
+        // played.
+        //
+        // This is a very primitive approach to note segmentation.
+        if (highest > prevAmplitude + threshold)
+        {
+            printf(" | (NEW note)");
+            noteLen = 1; // Reset note length
+        }
+        else
+        {
+            // Else this is likely the same note being played, so continue to increase
+            // the length
+            noteLen++;
+        }
+        
+        prevAmplitude = highest;
         
         // Get 2 surrounding frequencies to the 
         // peak and interpolate
@@ -339,14 +367,15 @@ void hps_getPeak(float* dsResult, int len)
         }
     
         peakFreq = interpolate(frequencies[0], frequencies[1]);
+        
+        printf("\nPeak frequency obtained: %f\n", peakFreq);
+    }
+    else
+    {
+        silenceLen++;
     }
     
     // ------------------------------------------------------
-
-    if (peakFreq != 0.0f)
-    {
-        printf("\nPeak frequency obtained: %f\n", peakFreq);
-    }
     
     // Estimate the pitch based on the highest frequency reported
     getPitch(&peakFreq);
@@ -668,10 +697,10 @@ void activate(GtkApplication* app, gpointer data)
     GtkWidget* key              = gtk_entry_new();
     GtkWidget* fileLoc          = gtk_entry_new();
 
-    GtkWidget* timeLbl          = gtk_label_new("Time signature: ");
+    GtkWidget* timeLbl          = gtk_label_new("Time signature (N/N): ");
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
-    GtkWidget* fileLocLbl       = gtk_label_new("Time signature (N/N): ");
+    GtkWidget* fileLocLbl       = gtk_label_new("File location: ");
 
     gtk_entry_set_max_length(GTK_ENTRY(time), 0);
     gtk_entry_set_max_length(GTK_ENTRY(tempo), 0);
