@@ -8,10 +8,10 @@
 #define REAL 0
 #define IMAG 1
 
-#define SAMPLE_RATE         22050//44100
+#define SAMPLE_RATE         22050
 #define WINDOW_SIZE         4096
 #define CHANNELS            1       // Mono input
-#define MAX_FREQUENCY       1109//555     // For now, limit the range to three piano octaves from  
+#define MAX_FREQUENCY       1109    // For now, limit the range to three piano octaves from  
                                     // C3-C6, (but cap at C#6) so a frequency range of 
                                     // 130.8 Hz - 1108.73 Hz
 #define MIN_FREQUENCY       130
@@ -19,6 +19,9 @@
 
 #define NOISE_FLOOR         0.1f    // Ensure the amplitude is at least this value
                                     // to help cancel out quieter noise
+                                    
+#define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
+                                    // for writing to the MIDI file to save on memory
 
 
 static int      running     = 0;
@@ -28,8 +31,14 @@ GtkWidget*      recBtn      = NULL;
 
 pthread_t       procTask;
 
-pthread_mutex_t mutex;
+pthread_mutex_t runLock;
 pthread_mutex_t procLock;
+
+// Buffers to store the output data to be translated into MIDI notes
+char        recPitches[MAX_NOTES][3];
+int         recLengths[MAX_NOTES];
+static int  totalLen = 0;
+static int  bufIndex = 0;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -51,6 +60,7 @@ float frequencies[38] =
     1046.50, 1108.73
 };
 
+// Responsible for starting/stopping recording upon clicking the GUI button
 void toggleRecording(GtkWidget* widget, gpointer data)
 {
     int threadResult = 0;
@@ -61,9 +71,9 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     {
         printf("\n*** Stopping recording thread... ***\n");
         
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&runLock);
         running = 0;
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&runLock);
     
         // Should ideally wait for processing to be 0, then cancel the thread,
         // but this causes “Trace/breakpoint trap” error
@@ -78,15 +88,19 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         
         gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
         
+        displayBufferContent();
+        
+        totalLen = 0;
+        bufIndex = 0;
     }
     
     else
     {
         printf("\n*** Starting recording thread... ***\n");
         
-        pthread_mutex_lock(&mutex);
+        pthread_mutex_lock(&runLock);
         running = 1;
-        pthread_mutex_unlock(&mutex);
+        pthread_mutex_unlock(&runLock);
         
         pthread_mutex_lock(&procLock);
         processing = 1;
@@ -103,6 +117,40 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     }
 }
 
+// Functions for appending to output pitch/length buffers
+void pitchesAdd(char* pitch)
+{
+    //static int bufIndex = 0;
+    
+    //recPitches[bufIndex] = actual;
+    
+    strcpy(recPitches[bufIndex], pitch);
+    //bufIndex++;
+    
+    //totalLen = bufIndex;
+}
+
+void lengthsAdd(int length)
+{
+    //static int bufIndex = 0;
+    
+    recLengths[bufIndex] = length;
+    bufIndex++;
+    
+    totalLen = bufIndex;
+}
+
+void displayBufferContent()
+{
+    printf("\n--- CONTENT OF OUTPUT BUFFERS: ---");
+    
+    for (int i = 0; i < totalLen; i++)
+    {
+        printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
+    }
+}
+
+// Displays the text of a PortAudio error
 void checkError(PaError err)
 {
     if (err != paNoError)
@@ -179,7 +227,7 @@ float calcMagnitude(float real, float imaginary)
 }
 
 // Prints the (estimated) pitch of a note based on a frequency.
-void getPitch(float* freq)
+char* getPitch(float* freq)
 {
     //static char* lastPitch = "N/A";
     //static int len = 0;
@@ -254,7 +302,9 @@ void getPitch(float* freq)
     {
         printf("[!] PITCH OUT OF RANGE\n");
         *freq = 0.0f;
-    }    
+    }
+    
+    return (pitch);
 }
 
 // Obtain the peak from the downsampled harmonic product spectrum
@@ -267,9 +317,14 @@ void hps_getPeak(float* dsResult, int len)
     
     float peakFreq = 0.0f;
     
-    static float prevAmplitude = 0.0f;
-    static int noteLen = 0;
-    static int silenceLen = 0;
+    static float prevAmplitude = 0.0f;  // Last recorded amplitude
+    static int noteLen = 0;             // Length of current note (number of iterations the "same note"
+                                        // has been tracked)
+    static int silenceLen = 0;          // Length of silence (indicate rests)
+    static char prevPitch[3];
+    char* curPitch;
+    int newNote = 0;
+    int lastNoteLen = 0;
     
     float threshold = 0.3f;
     
@@ -342,7 +397,10 @@ void hps_getPeak(float* dsResult, int len)
         if (highest > prevAmplitude + threshold)
         {
             printf(" | (NEW note)");
+            lastNoteLen = noteLen;
             noteLen = 1; // Reset note length
+            
+            newNote = 1;
         }
         else
         {
@@ -370,6 +428,12 @@ void hps_getPeak(float* dsResult, int len)
         
         printf("\nPeak frequency obtained: %f\n", peakFreq);
     }
+    // Implies recording has just started - don't record silence until first note played
+    // to prevent lots of rests at the start
+    else if (prevAmplitude == 0.0f)
+    {
+        // Do nothing
+    }
     else
     {
         silenceLen++;
@@ -378,7 +442,27 @@ void hps_getPeak(float* dsResult, int len)
     // ------------------------------------------------------
     
     // Estimate the pitch based on the highest frequency reported
-    getPitch(&peakFreq);
+    curPitch = getPitch(&peakFreq);
+    
+    // If first note of the recording
+    if (newNote && lastNoteLen == 0)
+    {
+        strcpy(prevPitch, curPitch);
+    }
+    // If a new note (not the first), add the last note vals to buffers
+    else if (newNote)
+    {
+        pitchesAdd(prevPitch);
+        lengthsAdd(lastNoteLen);
+        
+        strcpy(prevPitch, curPitch);
+    }
+    // Add silence instead (not functioning properly)
+    else if (silenceLen > 0)
+    {
+        pitchesAdd("SIL");
+        lengthsAdd(silenceLen);
+    }
 }
 
 // Interpolate 3 values to get a better peak estimate (won't have a huge impact - but good enough for now)
@@ -392,7 +476,7 @@ float interpolate(float first, float last)
 }
 
 // Gets the peak magnitude from the computed FFT output
-void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
+/*void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -423,7 +507,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
         (*avgFreq) += peakFreq;
         (*count)++;
     }
-}
+}*/
 
 // Simple first order low pass filter with a cutoff frequency
 void lowPassData(float* input, float* output, int length, int cutoff)
@@ -657,7 +741,7 @@ void* record(void* args)
         //temp--;
     }
     
-    printf("Sample collection stopped.\n");
+    printf("\nSample collection stopped.\n");
 
     err = Pa_StopStream(pStream);
     checkError(err);
