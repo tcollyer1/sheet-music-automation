@@ -324,6 +324,7 @@ void hps_getPeak(float* dsResult, int len)
     static char prevPitch[3];
     char* curPitch;
     int newNote = 0;
+    int wasSilence = 0;
     int lastNoteLen = 0;
     
     float threshold = 0.3f;
@@ -379,7 +380,10 @@ void hps_getPeak(float* dsResult, int len)
     // Interpolate results if note detected
     if (peakFreq != 0.0f)
     {
-        silenceLen = 0;
+        if (silenceLen != 0)
+        {
+            wasSilence = 1; // Flag that there was silence
+        }     
         
         printf("Amplitude: %f", highest);
         
@@ -400,7 +404,7 @@ void hps_getPeak(float* dsResult, int len)
             lastNoteLen = noteLen;
             noteLen = 1; // Reset note length
             
-            newNote = 1;
+            newNote = 1; // Flag new note
         }
         else
         {
@@ -449,19 +453,33 @@ void hps_getPeak(float* dsResult, int len)
     {
         strcpy(prevPitch, curPitch);
     }
-    // If a new note (not the first), add the last note vals to buffers
+    // If a new note after a period of silence
+    else if (newNote && wasSilence)
+    {
+        pitchesAdd(prevPitch);
+        lengthsAdd(silenceLen);
+
+        silenceLen = 0;
+
+        strcpy(prevPitch, curPitch);
+    }
+    // If a new note (not the first) after another note, add the last note vals to buffers
     else if (newNote)
     {
         pitchesAdd(prevPitch);
         lengthsAdd(lastNoteLen);
         
         strcpy(prevPitch, curPitch);
-    }
-    // Add silence instead (not functioning properly)
-    else if (silenceLen > 0)
+    }   
+    // If we're starting a point of silence (rests), store the last pitch
+    else if (silenceLen == 1)
     {
-        pitchesAdd("SIL");
-        lengthsAdd(silenceLen);
+        pitchesAdd(prevPitch);
+        lengthsAdd(lastNoteLen);
+
+        strcpy(prevPitch, "SIL");
+        //pitchesAdd("SIL");
+        //lengthsAdd(silenceLen);
     }
 }
 
