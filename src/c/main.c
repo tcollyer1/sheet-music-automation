@@ -26,6 +26,7 @@
 
 static int      running     = 0;
 static int      processing  = 0;
+static int      firstRun    = 0;
 
 GtkWidget*      recBtn      = NULL;
 
@@ -35,7 +36,7 @@ pthread_mutex_t runLock;
 pthread_mutex_t procLock;
 
 // Buffers to store the output data to be translated into MIDI notes
-char        recPitches[MAX_NOTES][3];
+char        recPitches[MAX_NOTES][4];
 int         recLengths[MAX_NOTES];
 static int  totalLen = 0;
 static int  bufIndex = 0;
@@ -96,6 +97,8 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     
     else
     {
+        firstRun = 1;
+        
         printf("\n*** Starting recording thread... ***\n");
         
         pthread_mutex_lock(&runLock);
@@ -118,25 +121,12 @@ void toggleRecording(GtkWidget* widget, gpointer data)
 }
 
 // Functions for appending to output pitch/length buffers
-void pitchesAdd(char* pitch)
-{
-    //static int bufIndex = 0;
-    
-    //recPitches[bufIndex] = actual;
-    
+void pitchesAdd(char* pitch, int length)
+{    
     strcpy(recPitches[bufIndex], pitch);
-    //bufIndex++;
-    
-    //totalLen = bufIndex;
-}
-
-void lengthsAdd(int length)
-{
-    //static int bufIndex = 0;
-    
     recLengths[bufIndex] = length;
-    bufIndex++;
     
+    bufIndex++; // Make sure to increase buffer index for next value
     totalLen = bufIndex;
 }
 
@@ -228,12 +218,7 @@ float calcMagnitude(float real, float imaginary)
 
 // Prints the (estimated) pitch of a note based on a frequency.
 char* getPitch(float* freq)
-{
-    //static char* lastPitch = "N/A";
-    //static int len = 0;
-    //static int silenceLen = 0;
-    //static float lastAmplitude = 0.0f;
-    
+{    
     char* pitch = NULL;
     int found = 0;
     
@@ -267,35 +252,11 @@ char* getPitch(float* freq)
         if (pitch != NULL)
         {
             printf("NOTE DETECTED: %s\n", pitch);
-            
-            //silenceLen = 0;
-            
-            // Get if note is continuing from last iteration
-            /*if (strcmp(pitch, lastPitch) == 0)
-            {
-                //printf("(Same note)\n");
-                len++;
-                
-                len = 1;
-            }
-            else
-            {
-                //printf("(NEW note)\n");
-                lastPitch = pitch;
-                len = 1;
-            }*/
-            
-            //printf("Current length: %d\n", len);
         }
         // Assume background noise (so no note)
         else
         {
-            //printf("[!] NO NOTE\n");
-            *freq = 0.0f;
-            
-            //silenceLen++;
-            
-            //printf("SILENCE: %d\n", silenceLen);            
+            *freq = 0.0f;           
         }
     }
     else
@@ -321,13 +282,27 @@ void hps_getPeak(float* dsResult, int len)
     static int noteLen = 0;             // Length of current note (number of iterations the "same note"
                                         // has been tracked)
     static int silenceLen = 0;          // Length of silence (indicate rests)
-    static char prevPitch[3];
+    static char prevPitch[4];
+    static int lastPeakBin = 0;
     char* curPitch;
     int newNote = 0;
     int wasSilence = 0;
     int lastNoteLen = 0;
     
     float threshold = 0.3f;
+    
+    // Reset static values if a new recording
+    if (firstRun)
+    {
+        printf("\nIS FIRST RUN\n");
+        prevAmplitude = 0.0f;
+        noteLen = 0;
+
+        silenceLen = 0;
+        lastPeakBin = 0;
+        
+        firstRun = 0;
+    }
     
     
     for (int i = 0; i < len; i++)
@@ -340,9 +315,6 @@ void hps_getPeak(float* dsResult, int len)
             peakBinNo = i;
         }
     }
-    
-    //peakFreq = peakBinNo * BIN_SIZE;
-    //otherPeakFreq = lastPeakBin * BIN_SIZE;
     
     // ------------------------------------------------------
     // In progress - to aid with octave errors
@@ -398,20 +370,27 @@ void hps_getPeak(float* dsResult, int len)
         // played.
         //
         // This is a very primitive approach to note segmentation.
-        if (highest > prevAmplitude + threshold)
+        if (highest > prevAmplitude + threshold || prevAmplitude == 0.0f || peakBinNo != lastPeakBin)
         {
             printf(" | (NEW note)");
             lastNoteLen = noteLen;
             noteLen = 1; // Reset note length
             
             newNote = 1; // Flag new note
+            
+            printf(" | LEN: %d", noteLen);
         }
         else
         {
             // Else this is likely the same note being played, so continue to increase
             // the length
+            printf(" | (SAME note)");
             noteLen++;
+            
+            printf(" | LEN: %d", noteLen);
         }
+        
+        lastPeakBin = peakBinNo;
         
         prevAmplitude = highest;
         
@@ -438,10 +417,13 @@ void hps_getPeak(float* dsResult, int len)
     {
         // Do nothing
     }
-    else
+    // Currently "silence" is picked up even during a sustained note as the amplitude
+    // can fall beneath the noise floor.
+    /*else
     {
         silenceLen++;
-    }
+        printf("[SILENCE] | (length %d)", silenceLen);
+    }*/
     
     // ------------------------------------------------------
     
@@ -454,10 +436,10 @@ void hps_getPeak(float* dsResult, int len)
         strcpy(prevPitch, curPitch);
     }
     // If a new note after a period of silence
+    // Currently never happens (see commented 'else' above)
     else if (newNote && wasSilence)
     {
-        pitchesAdd(prevPitch);
-        lengthsAdd(silenceLen);
+        pitchesAdd(prevPitch, silenceLen);
 
         silenceLen = 0;
 
@@ -466,20 +448,17 @@ void hps_getPeak(float* dsResult, int len)
     // If a new note (not the first) after another note, add the last note vals to buffers
     else if (newNote)
     {
-        pitchesAdd(prevPitch);
-        lengthsAdd(lastNoteLen);
+        pitchesAdd(prevPitch, lastNoteLen);
         
         strcpy(prevPitch, curPitch);
     }   
     // If we're starting a point of silence (rests), store the last pitch
+    // Currently never happens (see commented 'else' above)
     else if (silenceLen == 1)
     {
-        pitchesAdd(prevPitch);
-        lengthsAdd(lastNoteLen);
+        pitchesAdd(prevPitch, lastNoteLen);
 
-        strcpy(prevPitch, "SIL");
-        //pitchesAdd("SIL");
-        //lengthsAdd(silenceLen);
+        strcpy(prevPitch, "N/A");
     }
 }
 

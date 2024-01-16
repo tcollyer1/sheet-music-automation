@@ -35,8 +35,7 @@ float   interpolate(float first, float last);
 char* 	getPitch(float* freq);
 
 // Adding to output buffers
-void 	pitchesAdd(char* pitch);
-void 	lengthsAdd(int length);
+void 	pitchesAdd(char* pitch, int length);
 void 	displayBufferContent();
 
 #endif
