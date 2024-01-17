@@ -128,6 +128,16 @@ void pitchesAdd(char* pitch, int length)
     
     bufIndex++; // Make sure to increase buffer index for next value
     totalLen = bufIndex;
+    
+    // Need to handle this properly:
+    // a) Immediately stop running the recording loop here
+    // b) Change button display back to "Record"
+    // c) Carry out MIDI translation on buffer content as normal
+    if (totalLen == MAX_NOTES)
+    {
+        printf("\n[!] STOPPING: Buffer full!\n");
+        running = 0;
+    }
 }
 
 void displayBufferContent()
@@ -138,6 +148,8 @@ void displayBufferContent()
     {
         printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
     }
+    
+    printf("\n");
 }
 
 // Displays the text of a PortAudio error
@@ -158,16 +170,16 @@ void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length
     int outLength4 = getArrayLen(length, 4);
     int outLength5 = getArrayLen(length, 5);
     
-    // Downsample - compress spectrum 4x, by 2, by 3, by 4 and by 5
+    // Downsample - compress spectrum 4x --> by 2, by 3, by 4 and by 5
     float hps2[outLength2];
     float hps3[outLength3];
     float hps4[outLength4];
     float hps5[outLength5];
     
-    downsample(result, length, hps2, outLength2, 2);
-    downsample(result, length, hps3, outLength3, 3);
-    downsample(result, length, hps4, outLength4, 4);
-    downsample(result, length, hps5, outLength5, 5);
+    downsample(result, hps2, outLength2, 2);
+    downsample(result, hps3, outLength3, 3);
+    downsample(result, hps4, outLength4, 4);
+    downsample(result, hps5, outLength5, 5);
     
     for (int i = 0; i < outLength5; i++)
     {
@@ -183,7 +195,7 @@ int getArrayLen(int fftLen, int idx)
     return (outLen);
 }
 
-void downsample(const fftwf_complex* result, int length, float* out, int outLength, int idx)
+void downsample(const fftwf_complex* result, float* out, int outLength, int idx)
 {
     for (int i = 0; i < outLength; i++)
     {
@@ -191,11 +203,12 @@ void downsample(const fftwf_complex* result, int length, float* out, int outLeng
     }
 }
 
-// FFTW3 complex array types are in the form
-//
-// typedef float fftwf_complex[2];
-//
-// where 0 = real, 1 = imaginary
+/* FFTW3 complex array types are in the form
+*
+* typedef float fftwf_complex[2];
+*
+* where 0 = real, 1 = imaginary
+*/
 void convertToComplexArray(float* samples, fftwf_complex* complex, int length)
 {    
     for (int i = 0; i < length; i++)
@@ -217,14 +230,14 @@ float calcMagnitude(float real, float imaginary)
 }
 
 // Prints the (estimated) pitch of a note based on a frequency.
-char* getPitch(float* freq)
+char* getPitch(float freq)
 {    
     char* pitch = NULL;
     int found = 0;
     
     float lastFreq = 0.0f;
     
-    if (*freq < MAX_FREQUENCY)
+    if (freq < MAX_FREQUENCY)
     {
         // 37 notes in range C3-C6
         for (int i = 0; i < 37; i++)
@@ -234,9 +247,9 @@ char* getPitch(float* freq)
                 lastFreq = frequencies[i-1];
             }
             
-            if ((*freq) > lastFreq && (*freq) < frequencies[i + 1])
+            if (freq > lastFreq && freq < frequencies[i + 1])
             {
-                if (abs(frequencies[i] - (*freq)) < abs(frequencies[i + 1] - (*freq)))
+                if (abs(frequencies[i] - freq) < abs(frequencies[i + 1] - freq))
                 {
                     pitch = notes[i];
                     found = 1;
@@ -256,21 +269,36 @@ char* getPitch(float* freq)
         // Assume background noise (so no note)
         else
         {
-            *freq = 0.0f;           
+            //*freq = 0.0f;           
         }
     }
     else
     {
         printf("[!] PITCH OUT OF RANGE\n");
-        *freq = 0.0f;
+        //*freq = 0.0f;
     }
     
     return (pitch);
 }
 
+// Sum of magnitudes from whole spectrum can provide info on
+// whether this is the note's decay or attack - how dense/sparse
+// the spectrum is
+float getMagnitudeSum(const fftwf_complex* result, int len)
+{
+    float sum = 0.0f;
+    
+    for (int i = 0; i < len; i++)
+    {
+        sum += calcMagnitude(result[i][REAL], result[i][IMAG]);
+    }
+    
+    return (sum);
+}
+
 // Obtain the peak from the downsampled harmonic product spectrum
 // output.
-void hps_getPeak(float* dsResult, int len)
+void hps_getPeak(float* dsResult, int len, float magSum)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -284,6 +312,7 @@ void hps_getPeak(float* dsResult, int len)
     static int silenceLen = 0;          // Length of silence (indicate rests)
     static char prevPitch[4];
     static int lastPeakBin = 0;
+    static float lastMagSum = 0.0f;
     char* curPitch;
     int newNote = 0;
     int wasSilence = 0;
@@ -294,12 +323,13 @@ void hps_getPeak(float* dsResult, int len)
     // Reset static values if a new recording
     if (firstRun)
     {
-        printf("\nIS FIRST RUN\n");
         prevAmplitude = 0.0f;
         noteLen = 0;
 
         silenceLen = 0;
         lastPeakBin = 0;
+        
+        lastMagSum = 0.0f;
         
         firstRun = 0;
     }
@@ -352,48 +382,6 @@ void hps_getPeak(float* dsResult, int len)
     // Interpolate results if note detected
     if (peakFreq != 0.0f)
     {
-        if (silenceLen != 0)
-        {
-            wasSilence = 1; // Flag that there was silence
-        }     
-        
-        printf("Amplitude: %f", highest);
-        
-        // If the amplitude of this tone is higher than previously, this MIGHT indicate
-        // a new note being played.
-        //
-        // When held, a note has a decay/transient period, where its amplitude reduces - 
-        // therefore this MIGHT indicate the same note being played, if detected again.
-        // Realistically, this will probably fluctuate a lot so will not be very accurate.
-        //
-        // As soon as the amplitude increases again, it could be that a new note is being
-        // played.
-        //
-        // This is a very primitive approach to note segmentation.
-        if (highest > prevAmplitude + threshold || prevAmplitude == 0.0f || peakBinNo != lastPeakBin)
-        {
-            printf(" | (NEW note)");
-            lastNoteLen = noteLen;
-            noteLen = 1; // Reset note length
-            
-            newNote = 1; // Flag new note
-            
-            printf(" | LEN: %d", noteLen);
-        }
-        else
-        {
-            // Else this is likely the same note being played, so continue to increase
-            // the length
-            printf(" | (SAME note)");
-            noteLen++;
-            
-            printf(" | LEN: %d", noteLen);
-        }
-        
-        lastPeakBin = peakBinNo;
-        
-        prevAmplitude = highest;
-        
         // Get 2 surrounding frequencies to the 
         // peak and interpolate
         float frequencies[2];
@@ -411,24 +399,80 @@ void hps_getPeak(float* dsResult, int len)
         
         printf("\nPeak frequency obtained: %f\n", peakFreq);
     }
+    
+    // Estimate the pitch based on the highest frequency reported
+    curPitch = getPitch(peakFreq);
+    
+    // If note detected - 
+    if (peakFreq != 0.0f)
+    {
+        if (silenceLen != 0)
+        {
+            wasSilence = 1; // Flag that there was silence
+        }     
+        
+        printf("Amplitude: %f | MAGSUM: %f", highest, magSum);
+        
+        /* If the amplitude of this tone is higher than the previous, this MIGHT indicate
+        * a new note being played.
+        *
+        * When held, a note has a decay period, where its amplitude reduces - 
+        * therefore this COULD indicate the same note being played, if detected again.
+        * Realistically, this will probably fluctuate a lot so will not be very accurate.
+        * 
+        * This is why we also check if the sum of all of the magnitudes from the whole
+        * frequency spectrum is also decreasing - if this is the case, the note may also be
+        * decaying.
+        *
+        * As soon as the amplitude or sum of all the magnitudes increase again, or the pitch 
+        * changes, it could be that a new note is being played.
+        */
+        if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
+            && !wasSilence 
+            && prevAmplitude != 0.0f)
+        {
+            // This is likely a continuation of the same note being played, so continue to increase
+            // the length
+            printf(" | (SAME note)"); // Note decay
+            noteLen++;
+            
+            lastMagSum = magSum;
+            
+            printf(" | LEN: %d", noteLen);
+        }
+        else
+        {
+            printf(" | (NEW note)"); // New note attack
+            lastNoteLen = noteLen;
+            noteLen = 1; // Reset note length
+            
+            newNote = 1; // Flag new note
+            
+            lastMagSum = magSum;
+            
+            printf(" | LEN: %d", noteLen);
+        }
+        
+        
+        lastPeakBin = peakBinNo;
+        
+        prevAmplitude = highest;        
+    }
     // Implies recording has just started - don't record silence until first note played
     // to prevent lots of rests at the start
     else if (prevAmplitude == 0.0f)
     {
         // Do nothing
     }
-    // Currently "silence" is picked up even during a sustained note as the amplitude
-    // can fall beneath the noise floor.
-    /*else
+    // Else silence detected (rest)
+    else
     {
         silenceLen++;
-        printf("[SILENCE] | (length %d)", silenceLen);
-    }*/
+        lastNoteLen = noteLen;
+        printf("\n[SILENCE]");
+    }
     
     // ------------------------------------------------------
-    
-    // Estimate the pitch based on the highest frequency reported
-    curPitch = getPitch(&peakFreq);
     
     // If first note of the recording
     if (newNote && lastNoteLen == 0)
@@ -436,7 +480,6 @@ void hps_getPeak(float* dsResult, int len)
         strcpy(prevPitch, curPitch);
     }
     // If a new note after a period of silence
-    // Currently never happens (see commented 'else' above)
     else if (newNote && wasSilence)
     {
         pitchesAdd(prevPitch, silenceLen);
@@ -453,7 +496,6 @@ void hps_getPeak(float* dsResult, int len)
         strcpy(prevPitch, curPitch);
     }   
     // If we're starting a point of silence (rests), store the last pitch
-    // Currently never happens (see commented 'else' above)
     else if (silenceLen == 1)
     {
         pitchesAdd(prevPitch, lastNoteLen);
@@ -562,16 +604,6 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
-/*void initRecording(GtkWidget* widget, gpointer data)
-{
-    printf("\ninitRecording() - called\n");
-    running = 1;
-
-    pthread_create(&procTask, NULL, record, NULL);
-    
-    printf("\nThread created\n");
-}*/
-
 // Main function for processing microphone data.
 void* record(void* args)
 //void record(GtkWidget* widget, gpointer data)
@@ -610,13 +642,11 @@ void* record(void* args)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
-        //return NULL;
         exit(-1);
     }
     else if (numDevices == 0)
     {
         printf("No available audio devices detected!\n");
-        //return NULL;
         exit(-1);
     }
 
@@ -644,7 +674,6 @@ void* record(void* args)
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
-        //return NULL;
         exit(-1);
     }
 
@@ -695,8 +724,8 @@ void* record(void* args)
         * Remove unwanted/higher frequencies or noise from the sample
         * collected from the microphone.
         * 
-        * For now, limit the range to two octaves from C3-C5, so a frequency
-        * range of 130.8 Hz - 523.25 Hz
+        * For now, limit the range to three octaves from C3-C6, so a frequency
+        * range of 130.8 Hz - 1108.73 Hz
         */
         lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
@@ -712,14 +741,12 @@ void* record(void* args)
         * 
         * The waveform we get likely won't be periodic and will be a non-continuous 
         * signal, so to circumvent this we apply a windowing function 
-        * to reduce the amplitude of the discontinuities in the waveform.
+        * to reduce the amplitude of the discontinuities in the waveform (the edges).
         */
         setWindow(window, lowPassedSamples, WINDOW_SIZE);
-        //setWindow(window, samples, WINDOW_SIZE);
         
         // Convert to FFTW3 complex array
         convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
-        //convertToComplexArray(samples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
         fftwf_execute(plan);
@@ -728,14 +755,14 @@ void* record(void* args)
         dsSize = getArrayLen(WINDOW_SIZE, 5);
         float dsResult[dsSize];
         
+        // TEST
+        float magSum = getMagnitudeSum(outp, WINDOW_SIZE);
+        
         // Get HPS
         harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
         
         // Find peaks
-        //getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
-        hps_getPeak(dsResult, dsSize);
-        
-        //temp--;
+        hps_getPeak(dsResult, dsSize, magSum);
     }
     
     printf("\nSample collection stopped.\n");
@@ -812,7 +839,6 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
 
-    //gtk_grid_set_row_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
 
     // Add grid to the created window
