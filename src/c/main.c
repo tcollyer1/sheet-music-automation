@@ -272,7 +272,7 @@ char* getPitch(float freq)
         
         if (pitch != NULL)
         {
-            printf("NOTE DETECTED: %s\n", pitch);
+            //printf("NOTE DETECTED: %s\n", pitch);
         }
         
         // Otherwise assume background noise (so no note)
@@ -383,7 +383,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     
         peakFreq = interpolate(frequencies[0], frequencies[1]);
         
-        printf("\nPeak frequency obtained: %f\n", peakFreq);
+        //printf("\nPeak frequency obtained: %f\n", peakFreq);
     }
     
     // Estimate the pitch based on the highest frequency reported
@@ -417,22 +417,22 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         //if (isOnset || wasSilence || prevAmplitude == 0.0f || strcmp(prevPitch, curPitch) != 0)
         if (isOnset || prevAmplitude == 0.0f)
         {
-            printf("(NEW note)"); // New note attack
+            //printf("(NEW note)"); // New note attack
             lastNoteLen = noteLen;
             noteLen = 1; // Reset note length
             
             newNote = 1; // Flag new note
             
-            printf(" | LEN: %d\n", noteLen);
+            //printf(" | LEN: %d\n", noteLen);
         }
         else
         {
             // This is likely a continuation of the same note being played, so continue to increase
             // the length
-            printf("(SAME note)"); // Note decay
+            //printf("(SAME note)"); // Note decay
             noteLen++;
             
-            printf(" | LEN: %d\n", noteLen);
+            //printf(" | LEN: %d\n", noteLen);
         }
         
         /*if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
@@ -477,7 +477,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     {
         silenceLen++;
         lastNoteLen = noteLen;
-        printf("\n[SILENCE]");
+        //printf("\n[SILENCE]");
     }
     
     // ------------------------------------------------------
