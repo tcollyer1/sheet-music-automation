@@ -4,57 +4,169 @@
 #include <pthread.h>
 
 #include "../h/main.h"
+#include "../h/onsetsds.h"
 
 #define REAL 0
 #define IMAG 1
 
-#define SAMPLE_RATE         44100
+#define SAMPLE_RATE         22050
 #define WINDOW_SIZE         4096
 #define CHANNELS            1       // Mono input
-#define MAX_FREQUENCY       524     // For now, limit the range to two piano octaves from  
-                                    // C3-C5, so a frequency range of 130.8 Hz - 523.25 Hz
+#define MAX_FREQUENCY       1109    // For now, limit the range to three piano octaves from  
+                                    // C3-C6, (but cap at C#6) so a frequency range of 
+                                    // 130.8 Hz - 1108.73 Hz
 #define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
+#define NOISE_FLOOR         0.1f    // Ensure the amplitude is at least this value
+                                    // to help cancel out quieter noise
+                                    
+#define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
+                                    // for writing to the MIDI file to save on memory
+                                    
+#define MEDIAN_SPAN         88      // Amount of previous frames to account for, for
+                                    // onset detection. Around 11 is recommended for
+                                    // a size 512 FFT; so around 88 for size 4096?
 
-int             running     = 0;
+
+static int      running     = 0;
+static int      processing  = 0;
+static int      firstRun    = 0;
+
+GtkWidget*      recBtn      = NULL;
 
 pthread_t       procTask;
 
+pthread_mutex_t runLock;
+pthread_mutex_t procLock;
+
+// Buffers to store the output data to be translated into MIDI notes
+char        recPitches[MAX_NOTES][4];
+int         recLengths[MAX_NOTES];
+static int  totalLen = 0;
+static int  bufIndex = 0;
+
+// OnsetsDS struct - onset detection
+OnsetsDS ods;
+
 // For now, manually establish notes and corresponding
 // frequencies
-char* notes[25] = 
+char* notes[37] = 
 { 
     "C3", "C#3", "D3", "D#3", "E3", "F3", "F#3", "G3", "G#3", "A3", "Bb3", "B3",
     "C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "Bb4", "B4",
-    "C5"
+    "C5", "C#5", "D5", "D#5", "E5", "F5", "F#5", "G5", "G#5", "A5", "Bb5", "B5",
+    "C6"
 };
 
-// Add C#5 purely for upper bound checking in case the note detected is a C5
-float frequencies[26] = 
+// Add C#6 purely for upper bound checking in case the note detected is a C6
+float frequencies[38] = 
 {
     // C    // C#   // D    // D#   // E    // F    // F#   // G    // G#   // A    // Bb   // B
-    130.81, 138.59, 146.83, 155.56, 164.81, 174.61, 185.00, 196.00, 207.65, 220.00, 233.08, 246.94,
-    261.63, 277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88,
-    523.25, 554.37
+    130.81,  138.59, 146.83, 155.56, 164.81, 174.61, 185.00, 196.00, 207.65, 220.00, 233.08, 246.94,
+    261.63,  277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88,
+    523.25,  554.37, 587.33, 622.25, 659.25, 698.46, 739.99, 783.99, 830.61, 880.00, 932.33, 987.77,
+    1046.50, 1108.73
 };
 
-
-void stopRecording(GtkWidget* widget, gpointer data)
+// Responsible for starting/stopping recording upon clicking the GUI button
+void toggleRecording(GtkWidget* widget, gpointer data)
 {
-    printf("\nstopRecording() - called\n");
-    running = 0;
+    int threadResult = 0;
+    int threadResult2 = 0;
     
-    // Doesn't work
-    //pthread_join(procTask, NULL);
+    
+    if (running)
+    {
+        printf("\n*** Stopping recording thread... ***\n");
+        
+        pthread_mutex_lock(&runLock);
+        running = 0;
+        pthread_mutex_unlock(&runLock);
+    
+        // Should ideally wait for processing to be 0, then cancel the thread,
+        // but this causes “Trace/breakpoint trap” error
+        // Only thing omitting this does is not kill the thread
+        
+        /*threadResult = pthread_cancel(procTask);
+        
+        if (threadResult != 0)
+        {
+            g_error("\nERROR: Failed to stop thread!\n");
+        }*/
+        
+        gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
+        
+        displayBufferContent();
+        
+        totalLen = 0;
+        bufIndex = 0;
+    }
+    
+    else
+    {
+        firstRun = 1;
+        
+        printf("\n*** Starting recording thread... ***\n");
+        
+        pthread_mutex_lock(&runLock);
+        running = 1;
+        pthread_mutex_unlock(&runLock);
+        
+        pthread_mutex_lock(&procLock);
+        processing = 1;
+        pthread_mutex_unlock(&procLock);
+    
+        threadResult2 = pthread_create(&procTask, NULL, record, NULL);
+        
+        if (threadResult2 != 0)
+        {
+            g_error("\nERROR: Failed to start thread\n");
+        }
+        
+        gtk_button_set_label(GTK_BUTTON(recBtn), "Stop");
+    }
 }
 
+// Functions for appending to output pitch/length buffers
+void pitchesAdd(char* pitch, int length)
+{    
+    strcpy(recPitches[bufIndex], pitch);
+    recLengths[bufIndex] = length;
+    
+    bufIndex++; // Make sure to increase buffer index for next value
+    totalLen = bufIndex;
+    
+    // Need to handle this properly:
+    // a) Immediately stop running the recording loop here
+    // b) Change button display back to "Record"
+    // c) Carry out MIDI translation on buffer content as normal
+    if (totalLen == MAX_NOTES)
+    {
+        printf("\n[!] STOPPING: Buffer full!\n");
+        running = 0;
+    }
+}
+
+void displayBufferContent()
+{
+    printf("\n--- CONTENT OF OUTPUT BUFFERS: ---");
+    
+    for (int i = 0; i < totalLen; i++)
+    {
+        printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
+    }
+    
+    printf("\n");
+}
+
+// Displays the text of a PortAudio error
 void checkError(PaError err)
 {
     if (err != paNoError)
     {
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        exit(-1);
+        //exit(-1); // Aborts program when user stops recording, unsure why as this if condition is never met?
     }
 }
 
@@ -64,20 +176,22 @@ void harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length
     int outLength2 = getArrayLen(length, 2);
     int outLength3 = getArrayLen(length, 3);
     int outLength4 = getArrayLen(length, 4);
+    int outLength5 = getArrayLen(length, 5);
     
-    // Downsample - compress spectrum 3x, by 2, by 3 and by 4
+    // Downsample - compress spectrum 4x --> by 2, by 3, by 4 and by 5
     float hps2[outLength2];
     float hps3[outLength3];
     float hps4[outLength4];
+    float hps5[outLength5];
     
-    downsample(result, length, hps2, outLength2, 2);
-    downsample(result, length, hps3, outLength3, 3);
-    downsample(result, length, hps4, outLength4, 4);
+    downsample(result, hps2, outLength2, 2);
+    downsample(result, hps3, outLength3, 3);
+    downsample(result, hps4, outLength4, 4);
+    downsample(result, hps5, outLength5, 5);
     
-    for (int i = 0; i < outLength4; i++)
+    for (int i = 0; i < outLength5; i++)
     {
-        //outResult[i] = result[i][REAL] * hps2[i] * hps3[i] * hps4[i];
-        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f));
+        outResult[i] = sqrt(calcMagnitude(result[i][REAL], result[i][IMAG]) * calcMagnitude(hps2[i], 0.0f) * calcMagnitude(hps3[i], 0.0f) * calcMagnitude(hps4[i], 0.0f) * calcMagnitude(hps5[i], 0.0f));
     }
 }
 
@@ -89,7 +203,7 @@ int getArrayLen(int fftLen, int idx)
     return (outLen);
 }
 
-void downsample(const fftwf_complex* result, int length, float* out, int outLength, int idx)
+void downsample(const fftwf_complex* result, float* out, int outLength, int idx)
 {
     for (int i = 0; i < outLength; i++)
     {
@@ -97,11 +211,12 @@ void downsample(const fftwf_complex* result, int length, float* out, int outLeng
     }
 }
 
-// FFTW3 complex array types are in the form
-//
-// typedef float fftwf_complex[2];
-//
-// where 0 = real, 1 = imaginary
+/* FFTW3 complex array types are in the form
+*
+* typedef float fftwf_complex[2];
+*
+* where 0 = real, 1 = imaginary
+*/
 void convertToComplexArray(float* samples, fftwf_complex* complex, int length)
 {    
     for (int i = 0; i < length; i++)
@@ -122,50 +237,57 @@ float calcMagnitude(float real, float imaginary)
     return (magnitude);
 }
 
-// Prints the (estimated) pitch of a note (needs refining) based on a frequency.
-void getPitch(float* freq)
-{
+// Prints the (estimated) pitch of a note based on a frequency.
+char* getPitch(float freq)
+{    
     char* pitch = NULL;
     int found = 0;
     
     float lastFreq = 0.0f;
     
-    // 25 notes in range C3-C5
-    for (int i = 0; i < 25; i++)
+    if (freq < MAX_FREQUENCY)
     {
-        if (i != 0)
+        // 37 notes in range C3-C6
+        for (int i = 0; i < 37; i++)
         {
-            lastFreq = frequencies[i-1];
-        }
-        
-        if ((*freq) > lastFreq && (*freq) < frequencies[i + 1])
-        {
-            if (abs(frequencies[i] - (*freq)) < abs(frequencies[i + 1] - (*freq)))
+            if (i != 0)
             {
-                pitch = notes[i];
-                found = 1;
+                lastFreq = frequencies[i-1];
             }
+            
+            if (freq > lastFreq && freq < frequencies[i + 1])
+            {
+                if (abs(frequencies[i] - freq) < abs(frequencies[i + 1] - freq))
+                {
+                    pitch = notes[i];
+                    found = 1;
+                }
+            }
+            
+            if (found == 1)
+            {
+                break;
+            }  
         }
         
-        if (found == 1)
+        if (pitch != NULL)
         {
-            break;
-        }  
+            //printf("NOTE DETECTED: %s\n", pitch);
+        }
+        
+        // Otherwise assume background noise (so no note)
     }
-    
-    if (pitch != NULL)
-    {
-        printf("\nNOTE DETECTED: %s\n", pitch);
-    }
-    // Frequency not in C3-C5 range
     else
     {
-        printf("\n[!] Note undetectable\n");
-        *freq = 0.0f;
+        printf("[!] PITCH OUT OF RANGE\n");
     }
+    
+    return (pitch);
 }
 
-void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq, int* count)
+// Obtain the peak from the downsampled harmonic product spectrum
+// output.
+void hps_getPeak(float* dsResult, int len, bool isOnset)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -173,142 +295,235 @@ void hps_getPeak(fftwf_complex* result, float* dsResult, int len, float* avgFreq
     
     float peakFreq = 0.0f;
     
+    static float prevAmplitude = 0.0f;  // Last recorded amplitude
+    static int noteLen = 0;             // Length of current note (number of iterations the "same note"
+                                        // has been tracked)
+    static int silenceLen = 0;          // Length of silence (indicate rests)
+    static char prevPitch[4];
+    static int lastPeakBin = 0;
+    char* curPitch;
+    int newNote = 0;
+    int wasSilence = 0;
+    int lastNoteLen = 0;
+    
+    float threshold = 0.3f;
+    
+    // Reset static values if a new recording
+    if (firstRun)
+    {
+        prevAmplitude = 0.0f;
+        noteLen = 0;
+
+        silenceLen = 0;
+        lastPeakBin = 0;
+        
+        firstRun = 0;
+    }
+    
+    
     for (int i = 0; i < len; i++)
     {
-        //current = calcMagnitude(dsResult[i], result[i][IMAG]);
         current = dsResult[i];
         
-        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
-        {
+        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY && current >= NOISE_FLOOR)
+        {           
             highest = current;
             peakBinNo = i;
         }
     }
     
+    // ------------------------------------------------------
+    // In progress - to aid with octave errors
+    /*if (otherPeakFreq < (peakFreq / 2) + threshold 
+    && otherPeakFreq > (peakFreq / 2) - threshold
+    && fabs(highest - last) <= 0.33f)
+    {
+        printf("\nPeak could also be %f", otherPeakFreq);
+    }*/
+    // Also try this
+    // ------------------------------------------------------    
+    /*int actualMax = 1;
+    int maxFreq = peakBinNo * 3 / 4; // Search up to 3/4 of the identified peak's bins (?)
+
+    for (int i = 2; i < maxFreq; i++)
+    {
+        if (dsResult[i] > dsResult[actualMax])
+        {
+            actualMax = i;
+        }
+    }
+
+    if (abs(actualMax * 2 - peakBinNo) < 4)
+    {
+        if (dsResult[actualMax] / dsResult[peakBinNo] > 0.2f && actualMax * BIN_SIZE > MIN_FREQUENCY && dsResult[actualMax] >= NOISE_FLOOR)
+        {
+            //peakBinNo = actualMax;
+            printf("\n[!] NEW PEAK BIN SET\n");
+        }
+    }*/
+    // ------------------------------------------------------
+    
     peakFreq = peakBinNo * BIN_SIZE;
-
-    printf("\nPeak frequency obtained: %f\n", peakFreq);
-
-    int n = 0;
-    float surroundingFreqs[5];
-
-    // Use peak frequency plus 4 surrounding frequencies
-    // for quadratic regression input
-    if (peakBinNo < 2)
-    {
-        surroundingFreqs[0] = 0;
-        surroundingFreqs[1] = BIN_SIZE;
-        surroundingFreqs[2] = 2 * BIN_SIZE;
-        surroundingFreqs[3] = 3 * BIN_SIZE;
-        surroundingFreqs[4] = 4 * BIN_SIZE;
-    }
-    else if (peakBinNo > len - 3)
-    {
-        n = len - 1;
-        surroundingFreqs[0] = n * BIN_SIZE;
-        surroundingFreqs[1] = (n-1) * BIN_SIZE;
-        surroundingFreqs[2] = (n-2) * BIN_SIZE;
-        surroundingFreqs[3] = (n-3) * BIN_SIZE;
-        surroundingFreqs[4] = (n-4) * BIN_SIZE;
-    }
-    // Try to have peak in the centre
-    else
-    {
-        n = peakBinNo;
-
-        surroundingFreqs[0] = (n - 2) * BIN_SIZE;
-        surroundingFreqs[1] = (n - 1) * BIN_SIZE;
-        surroundingFreqs[2] = n * BIN_SIZE;
-        surroundingFreqs[3] = (n + 1) * BIN_SIZE;
-        surroundingFreqs[4] = (n + 2) * BIN_SIZE;
-    }
-
-    // Get equation for best quadratic fit of some of the neighbouring frequencies
-    // to the peak, and get the maximum value from these
-    quadraticRegr(surroundingFreqs, 5);
     
-    // Estimate the pitch based on the highest frequency reported
-    getPitch(&peakFreq);
-    
+    // Interpolate results if note detected
     if (peakFreq != 0.0f)
     {
-        (*avgFreq) += peakFreq;
-        (*count)++;
-    }
-}
+        // Get 2 surrounding frequencies to the 
+        // peak and interpolate
+        float frequencies[2];
 
-void quadraticRegr(const float* values, int num)
-{
-    // === APPLY QUADRATIC REGRESSION HERE ===
-    int a = 0, b = 0, c = 0;
+        // Ensure peak is not at the edges of the window (should not occur anyway)
+        if (peakBinNo != 0 && peakBinNo != len - 1)
+        {
+            int n = peakBinNo;
+
+            frequencies[0] = (n - 1) * BIN_SIZE;
+            frequencies[1] = (n + 1) * BIN_SIZE;
+        }
     
-    float x = 0.0f;
-    
-    float sumA[num], sumB[num], sumC[num], sumD[num], sumE[num], result[7];
-    
-    for (int i = 0; i < num; i++)
-    {
-        x = (float)i;
+        peakFreq = interpolate(frequencies[0], frequencies[1]);
         
-        sumA[i] = x * x;
-        sumB[i] = x * x * x;
-        sumC[i] = x * x * x * x;
-        sumD[i] = x * values[i];
-        sumE[i] = (x * x) * values[i];
+        //printf("\nPeak frequency obtained: %f\n", peakFreq);
     }
     
-    for (int i = 0; i < num; i++)
+    // Estimate the pitch based on the highest frequency reported
+    curPitch = getPitch(peakFreq);
+    
+    // If note detected - 
+    if (peakFreq != 0.0f)
     {
-        result[0] += (float)i;
-        result[1] += values[i];
-        result[2] += sumA[i];
-        result[3] += sumB[i];
-        result[4] += sumC[i];
-        result[5] += sumD[i];
-        result[6] += sumE[i];
+        if (silenceLen != 0)
+        {
+            wasSilence = 1; // Flag that there was silence
+        }     
+        
+        //printf("Amplitude: %f", highest);
+        
+        /* If the amplitude of this tone is higher than the previous, this MIGHT indicate
+        * a new note being played.
+        *
+        * When held, a note has a decay period, where its amplitude reduces - 
+        * therefore this COULD indicate the same note being played, if detected again.
+        * Realistically, this will probably fluctuate a lot so will not be very accurate.
+        * 
+        * This is why we also check if the sum of all of the magnitudes from the whole
+        * frequency spectrum is also decreasing - if this is the case, the note may also be
+        * decaying.
+        *
+        * As soon as the amplitude or sum of all the magnitudes increase again, or the pitch 
+        * changes, it could be that a new note is being played.
+        */
+        
+        //if (isOnset || wasSilence || prevAmplitude == 0.0f || strcmp(prevPitch, curPitch) != 0)
+        if (isOnset || prevAmplitude == 0.0f)
+        {
+            //printf("(NEW note)"); // New note attack
+            lastNoteLen = noteLen;
+            noteLen = 1; // Reset note length
+            
+            newNote = 1; // Flag new note
+            
+            //printf(" | LEN: %d\n", noteLen);
+        }
+        else
+        {
+            // This is likely a continuation of the same note being played, so continue to increase
+            // the length
+            //printf("(SAME note)"); // Note decay
+            noteLen++;
+            
+            //printf(" | LEN: %d\n", noteLen);
+        }
+        
+        /*if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
+            && !wasSilence 
+            && prevAmplitude != 0.0f)
+        {
+            // This is likely a continuation of the same note being played, so continue to increase
+            // the length
+            printf(" | (SAME note)"); // Note decay
+            noteLen++;
+            
+            lastMagSum = magSum;
+            
+            printf(" | LEN: %d", noteLen);
+        }
+        else
+        {
+            printf(" | (NEW note)"); // New note attack
+            lastNoteLen = noteLen;
+            noteLen = 1; // Reset note length
+            
+            newNote = 1; // Flag new note
+            
+            lastMagSum = magSum;
+            
+            printf(" | LEN: %d", noteLen);
+        }*/
+        
+        
+        lastPeakBin = peakBinNo;
+        
+        prevAmplitude = highest;        
+    }
+    // Implies recording has just started - don't record silence until first note played
+    // to prevent lots of rests at the start
+    else if (prevAmplitude == 0.0f)
+    {
+        // Do nothing
+    }
+    // Else silence detected (rest)
+    else
+    {
+        silenceLen++;
+        lastNoteLen = noteLen;
+        //printf("\n[SILENCE]");
     }
     
-    summations(result, num);
+    // ------------------------------------------------------
+    
+    // If first note of the recording
+    if (newNote && lastNoteLen == 0)
+    {
+        strcpy(prevPitch, curPitch);
+    }
+    // If a new note after a period of silence
+    else if (newNote && wasSilence)
+    {
+        pitchesAdd(prevPitch, silenceLen);
+
+        silenceLen = 0;
+
+        strcpy(prevPitch, curPitch);
+    }
+    // If a new note (not the first) after another note, add the last note vals to buffers
+    else if (newNote)
+    {
+        pitchesAdd(prevPitch, lastNoteLen);
+        
+        strcpy(prevPitch, curPitch);
+    }   
+    // If we're starting a point of silence (rests), store the last pitch
+    else if (silenceLen == 1)
+    {
+        pitchesAdd(prevPitch, lastNoteLen);
+
+        strcpy(prevPitch, "N/A");
+    }
 }
 
-void summations(const float* result, int numItems)
+// Interpolate 3 values to get a better peak estimate (won't have a huge impact - but good enough for now)
+float interpolate(float first, float last)
 {
-    //float sum1[3], sum2[3], sum3[3];
+    //float result = 0.5f * (last - first) / (2 * second - first - last);
     
-    COEFFICIENTS sum1, sum2, sum3;
-    
-    float *a, *b, *c;
-    
-    sum1.a = result[4];
-    sum1.b = result[3];
-    sum1.c = result[2];
-    
-    sum2.a = result[3];
-    sum2.b = result[2];
-    sum2.c = result[0];
-    
-    sum3.a = result[2];
-    sum3.b = result[0];
-    sum3.c = (float)numItems;
-    
-    /*sum1 = a1 + b1 + c1;
-    sum2 = a2 + b2 + c2;
-    sum3 = a3 + b3 + c3;*/ 
-    
-    // Get coefficients
-    solve(sum1, sum2, sum3, a, b, c);
-    
-    // Use coefficients to get estimated peak frequency for this equation
-    // (x = -b/(2a) -> x being the new max freq)
-}
+    float result = first + 0.66f * (last - first);
 
-void solve (COEFFICIENTS eq1, COEFFICIENTS eq2, COEFFICIENTS eq3, float* a, float* b, float* c)
-{
-    // Solve equation for coefficients
+    return (result);
 }
 
 // Gets the peak magnitude from the computed FFT output
-void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
+/*void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -339,7 +554,7 @@ void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
         (*avgFreq) += peakFreq;
         (*count)++;
     }
-}
+}*/
 
 // Simple first order low pass filter with a cutoff frequency
 void lowPassData(float* input, float* output, int length, int cutoff)
@@ -397,28 +612,9 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
-/*void initRecording(GtkWidget* widget, gpointer data)
-{
-    printf("\ninitRecording() - called\n");
-    running = 1;
-
-    pthread_create(&procTask, NULL, record, NULL);
-    
-    printf("\nThread created\n");
-}*/
-
 // Main function for processing microphone data.
-//void* record(void* args)
-void record(GtkWidget* widget, gpointer data)
+void* record(void* args)
 {
-    //gtk_label_set_text(label, "Recording...");
-
-    // Update GUI with label update?
-    //while (gtk_events_pending())
-    //{
-    //    gtk_main_iteration();
-    //}
-
     // Buffers to store data, window for windowing the data
     float samples[WINDOW_SIZE];
     float lowPassedSamples[WINDOW_SIZE];
@@ -433,6 +629,10 @@ void record(GtkWidget* widget, gpointer data)
     outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     plan = fftwf_plan_dft_1d(WINDOW_SIZE, inp, outp, FFTW_FORWARD, FFTW_ESTIMATE);
     
+    // Allocate memory for ODS - onset detection
+    float* odsData = (float*)malloc(onsetsds_memneeded(ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN));
+    onsetsds_init(&ods, odsData, ODS_FFT_FFTW3_HC, ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN, SAMPLE_RATE);
+    
 
     // Initialise PortAudio stream
     PaError err = Pa_Initialize();
@@ -445,13 +645,11 @@ void record(GtkWidget* widget, gpointer data)
     if (numDevices < 0)
     {
         printf("Error getting the device count\n");
-        //return NULL;
         exit(-1);
     }
     else if (numDevices == 0)
     {
         printf("No available audio devices detected!\n");
-        //return NULL;
         exit(-1);
     }
 
@@ -474,12 +672,9 @@ void record(GtkWidget* widget, gpointer data)
     // Use default input device
     int inpDevice = Pa_GetDefaultInputDevice();
     
-    // Use device 8 (seems to be my microphone)
-    //int inpDevice = 8;
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
-        //return NULL;
         exit(-1);
     }
 
@@ -511,15 +706,11 @@ void record(GtkWidget* widget, gpointer data)
 
     printf("--- Recording... ---\n");
     
-    float avgFrequency = 0.0f;
-    int count = 0;
-    
-    int dsSize = 0;
-    
-    int temp = 10;
+    int     dsSize  = 0;
+    bool    onset   = false;
 
-    // Main processing loop
-    while (temp)
+    // --- Main processing loop ---
+    while (running)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
@@ -530,8 +721,8 @@ void record(GtkWidget* widget, gpointer data)
         * Remove unwanted/higher frequencies or noise from the sample
         * collected from the microphone.
         * 
-        * For now, limit the range to two octaves from C3-C5, so a frequency
-        * range of 130.8 Hz - 523.25 Hz
+        * For now, limit the range to three octaves from C3-C6, so a frequency
+        * range of 130.8 Hz - 1108.73 Hz
         */
         lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
@@ -547,31 +738,32 @@ void record(GtkWidget* widget, gpointer data)
         * 
         * The waveform we get likely won't be periodic and will be a non-continuous 
         * signal, so to circumvent this we apply a windowing function 
-        * to reduce the amplitude of the discontinuities in the waveform.
+        * to reduce the amplitude of the discontinuities in the waveform (the edges).
         */
         setWindow(window, lowPassedSamples, WINDOW_SIZE);
-        //setWindow(window, samples, WINDOW_SIZE);
         
         // Convert to FFTW3 complex array
         convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
-        //convertToComplexArray(samples, inp, WINDOW_SIZE);
         
         // Carry out the FFT
         fftwf_execute(plan);
         
-        // Get new array size for downsampled data
-        dsSize = getArrayLen(WINDOW_SIZE, 4);
+        // Get new array size for downsampled data - 5 harmonics considered
+        dsSize = getArrayLen(WINDOW_SIZE, 5);
         float dsResult[dsSize];
+        
+        // Carry out onset detection from FFT output, using a complex-domain deviation
+        // onset detection function
+        onset = onsetsds_process(&ods, outp);
         
         // Get HPS
         harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
         
         // Find peaks
-        //getPeak(outp, WINDOW_SIZE, &avgFrequency, &count);
-        hps_getPeak(outp, dsResult, dsSize, &avgFrequency, &count);
-        
-        temp--;
+        hps_getPeak(dsResult, dsSize, onset);
     }
+    
+    printf("\nSample collection stopped.\n");
 
     err = Pa_StopStream(pStream);
     checkError(err);
@@ -580,39 +772,60 @@ void record(GtkWidget* widget, gpointer data)
     checkError(err);
     
     printf("Stream closed.\n");
-    
-    printf("\navgFrequency = %f, count = %d\n", avgFrequency, count);
-    
-    // Average out collected frequencies (assuming only one pitch played for now)
-    avgFrequency /= count;
-    
-    printf("\n-------------------\n");
-    printf("\nOverall pitch:\n");
-    printf("\n-------------------\n");
-    getPitch(&avgFrequency);
 
     // --------------
+    
+    // Pa_Terminate() causes a segmentation fault when called on a separate thread...
 
     // Terminate PortAudio stream
-    err = Pa_Terminate();
+    /*err = Pa_Terminate();
     printf("\nStream terminated.\n");
-    checkError(err);
+    checkError(err);*/
     
     fftwf_free(inp);
     fftwf_free(outp);
     pStream = NULL;
     
     printf("\nMemory freed.\n");
+    
+    pthread_mutex_lock(&procLock);
+    processing = 0; // Indicate to main (GTK) thread that processing has now stopped
+    pthread_mutex_unlock(&procLock);
 }
 
 void activate(GtkApplication* app, gpointer data)
 {
-    GtkWidget* pWindow      = gtk_application_window_new(app);
-    GtkWidget* pStartButton = gtk_button_new_with_label("Record");
-    GtkWidget* pStopButton  = gtk_button_new_with_label("Stop");
+    GtkWidget* pWindow          = gtk_application_window_new(app);
 
-    // Create grid for button display
+    // Text boxes & labels
+    GtkWidget* time             = gtk_entry_new();
+    GtkWidget* tempo            = gtk_entry_new();
+    GtkWidget* key              = gtk_entry_new();
+    GtkWidget* fileLoc          = gtk_entry_new();
+
+    GtkWidget* timeLbl          = gtk_label_new("Time signature (N/N): ");
+    GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
+    GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
+    GtkWidget* fileLocLbl       = gtk_label_new("File location: ");
+
+    gtk_entry_set_max_length(GTK_ENTRY(time), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(tempo), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(key), 0);
+    gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
+
+    gtk_label_set_xalign(GTK_LABEL(timeLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
+    
+    recBtn = gtk_button_new_with_label("Record");
+
+    // Create containing box & grid for layout
+    GtkWidget* pBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     GtkWidget* pGrid = gtk_grid_new();
+
+    // Add grid to box with 20px padding from the edge
+    gtk_box_pack_start(GTK_BOX(pBox), pGrid, TRUE, TRUE, 16);
 
     // Set the window position & default size
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
@@ -624,16 +837,27 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
 
+    gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
+
     // Add grid to the created window
+    gtk_container_add(GTK_CONTAINER(pWindow), pBox);
     gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
 
-    // Attach buttons to grid
-    gtk_grid_attach(GTK_GRID(pGrid), pStartButton, 1, 1, 1, 1);
-    gtk_grid_attach_next_to(GTK_GRID(pGrid), pStopButton, pStartButton, GTK_POS_RIGHT, 1, 1);
+    // Attach textboxes, labels and button to grid
+    gtk_grid_attach(GTK_GRID(pGrid), timeLbl, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), tempoLbl, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), keyLbl, 1, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 4, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(pGrid), time, 3, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), tempo, 3, 2, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), key, 3, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 3, 4, 1, 1);
+
+    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
 
     // Connect click events to callback functions
-    g_signal_connect(pStartButton, "clicked", G_CALLBACK(record), NULL);
-    g_signal_connect(pStopButton, "clicked", G_CALLBACK(stopRecording), NULL);
+    g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), NULL);
 
     // Make the X button close the window correctly & end program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
@@ -652,6 +876,7 @@ int main(int argc, char** argv)
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
     
     result = g_application_run(G_APPLICATION(app), argc, argv);
+    
     g_object_unref(app);
 
     return (result);

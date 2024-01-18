@@ -2,7 +2,7 @@ EXEC = p
 
 CLIB = -lportaudio -lrt -pthread -lasound `pkg-config --cflags gtk+-3.0 --libs gtk+-3.0` -lfftw3f -lm
 
-$(EXEC): main.c
+$(EXEC): ../h/onsetsds.c main.c
 	gcc -o $@ $^ $(CLIB)
 
 setup:
