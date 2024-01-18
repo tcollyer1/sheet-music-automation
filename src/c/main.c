@@ -4,6 +4,7 @@
 #include <pthread.h>
 
 #include "../h/main.h"
+#include "../h/onsetsds.h"
 
 #define REAL 0
 #define IMAG 1
@@ -22,6 +23,10 @@
                                     
 #define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
                                     // for writing to the MIDI file to save on memory
+                                    
+#define MEDIAN_SPAN         88      // Amount of previous frames to account for, for
+                                    // onset detection. Around 11 is recommended for
+                                    // a size 512 FFT; so around 88 for size 4096?
 
 
 static int      running     = 0;
@@ -40,6 +45,9 @@ char        recPitches[MAX_NOTES][4];
 int         recLengths[MAX_NOTES];
 static int  totalLen = 0;
 static int  bufIndex = 0;
+
+// OnsetsDS struct - onset detection
+OnsetsDS ods;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -266,39 +274,20 @@ char* getPitch(float freq)
         {
             printf("NOTE DETECTED: %s\n", pitch);
         }
-        // Assume background noise (so no note)
-        else
-        {
-            //*freq = 0.0f;           
-        }
+        
+        // Otherwise assume background noise (so no note)
     }
     else
     {
         printf("[!] PITCH OUT OF RANGE\n");
-        //*freq = 0.0f;
     }
     
     return (pitch);
 }
 
-// Sum of magnitudes from whole spectrum can provide info on
-// whether this is the note's decay or attack - how dense/sparse
-// the spectrum is
-float getMagnitudeSum(const fftwf_complex* result, int len)
-{
-    float sum = 0.0f;
-    
-    for (int i = 0; i < len; i++)
-    {
-        sum += calcMagnitude(result[i][REAL], result[i][IMAG]);
-    }
-    
-    return (sum);
-}
-
 // Obtain the peak from the downsampled harmonic product spectrum
 // output.
-void hps_getPeak(float* dsResult, int len, float magSum)
+void hps_getPeak(float* dsResult, int len, bool isOnset)
 {
     float highest = 0.0f;
     float current = 0.0f;
@@ -312,7 +301,6 @@ void hps_getPeak(float* dsResult, int len, float magSum)
     static int silenceLen = 0;          // Length of silence (indicate rests)
     static char prevPitch[4];
     static int lastPeakBin = 0;
-    static float lastMagSum = 0.0f;
     char* curPitch;
     int newNote = 0;
     int wasSilence = 0;
@@ -328,8 +316,6 @@ void hps_getPeak(float* dsResult, int len, float magSum)
 
         silenceLen = 0;
         lastPeakBin = 0;
-        
-        lastMagSum = 0.0f;
         
         firstRun = 0;
     }
@@ -411,7 +397,7 @@ void hps_getPeak(float* dsResult, int len, float magSum)
             wasSilence = 1; // Flag that there was silence
         }     
         
-        printf("Amplitude: %f | MAGSUM: %f", highest, magSum);
+        //printf("Amplitude: %f", highest);
         
         /* If the amplitude of this tone is higher than the previous, this MIGHT indicate
         * a new note being played.
@@ -427,7 +413,29 @@ void hps_getPeak(float* dsResult, int len, float magSum)
         * As soon as the amplitude or sum of all the magnitudes increase again, or the pitch 
         * changes, it could be that a new note is being played.
         */
-        if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
+        
+        //if (isOnset || wasSilence || prevAmplitude == 0.0f || strcmp(prevPitch, curPitch) != 0)
+        if (isOnset || prevAmplitude == 0.0f)
+        {
+            printf("(NEW note)"); // New note attack
+            lastNoteLen = noteLen;
+            noteLen = 1; // Reset note length
+            
+            newNote = 1; // Flag new note
+            
+            printf(" | LEN: %d\n", noteLen);
+        }
+        else
+        {
+            // This is likely a continuation of the same note being played, so continue to increase
+            // the length
+            printf("(SAME note)"); // Note decay
+            noteLen++;
+            
+            printf(" | LEN: %d\n", noteLen);
+        }
+        
+        /*if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
             && !wasSilence 
             && prevAmplitude != 0.0f)
         {
@@ -451,7 +459,7 @@ void hps_getPeak(float* dsResult, int len, float magSum)
             lastMagSum = magSum;
             
             printf(" | LEN: %d", noteLen);
-        }
+        }*/
         
         
         lastPeakBin = peakBinNo;
@@ -606,16 +614,7 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
 
 // Main function for processing microphone data.
 void* record(void* args)
-//void record(GtkWidget* widget, gpointer data)
 {
-    //gtk_label_set_text(label, "Recording...");
-
-    // Update GUI with label update?
-    //while (gtk_events_pending())
-    //{
-    //    gtk_main_iteration();
-    //}
-
     // Buffers to store data, window for windowing the data
     float samples[WINDOW_SIZE];
     float lowPassedSamples[WINDOW_SIZE];
@@ -629,6 +628,10 @@ void* record(void* args)
     inp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     plan = fftwf_plan_dft_1d(WINDOW_SIZE, inp, outp, FFTW_FORWARD, FFTW_ESTIMATE);
+    
+    // Allocate memory for ODS - onset detection
+    float* odsData = (float*)malloc(onsetsds_memneeded(ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN));
+    onsetsds_init(&ods, odsData, ODS_FFT_FFTW3_HC, ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN, SAMPLE_RATE);
     
 
     // Initialise PortAudio stream
@@ -669,8 +672,6 @@ void* record(void* args)
     // Use default input device
     int inpDevice = Pa_GetDefaultInputDevice();
     
-    // Use device 8 (seems to be my microphone)
-    //int inpDevice = 8;
     if (inpDevice == paNoDevice)
     {
         printf("No default input device.\n");
@@ -702,17 +703,13 @@ void* record(void* args)
     printf("Starting stream\n");
     err = Pa_StartStream(pStream);
     checkError(err);
-    
-    //processing = 1;
 
     printf("--- Recording... ---\n");
     
-    int dsSize = 0;
-    
-    //int temp = 10;
+    int     dsSize  = 0;
+    bool    onset   = false;
 
-    // Main processing loop
-    //while (temp)
+    // --- Main processing loop ---
     while (running)
     {
         // Read samples from microphone.
@@ -755,14 +752,15 @@ void* record(void* args)
         dsSize = getArrayLen(WINDOW_SIZE, 5);
         float dsResult[dsSize];
         
-        // TEST
-        float magSum = getMagnitudeSum(outp, WINDOW_SIZE);
+        // Carry out onset detection from FFT output, using a complex-domain deviation
+        // onset detection function
+        onset = onsetsds_process(&ods, outp);
         
         // Get HPS
         harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
         
         // Find peaks
-        hps_getPeak(dsResult, dsSize, magSum);
+        hps_getPeak(dsResult, dsSize, onset);
     }
     
     printf("\nSample collection stopped.\n");

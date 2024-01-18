@@ -2,6 +2,7 @@
 #define MAIN_H
 
 #include <stdlib.h>
+#include <stdbool.h>
 #include <portaudio.h>
 #include <gtk/gtk.h>
 #include <fftw3.h>
@@ -12,7 +13,6 @@ void	configureInParams(int inpDevice, PaStreamParameters* i);
 void	activate(GtkApplication* app, gpointer data);
 
 void*	record(void* args);
-//void 	record(GtkWidget* widget, gpointer data);
 void	toggleRecording(GtkWidget* widget, gpointer data);
 
 // FFT preparation & calculation
@@ -28,11 +28,9 @@ float 	calcMagnitude(float real, float imaginary);
 int 	getArrayLen(int fftLen, int idx);
 void 	harmonicProductSpectrum(fftwf_complex* result, float* outResult, int length);
 void 	downsample(const fftwf_complex* result, float* out, int outLength, int idx);
-void 	hps_getPeak(float* dsResult, int len, float magSum);
-float 	getMagnitudeSum(const fftwf_complex* result, int len);
+void 	hps_getPeak(float* dsResult, int len, bool isOnset);
 float   interpolate(float first, float last);
 
-//void	getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count);
 char* 	getPitch(float freq);
 
 // Adding to output buffers
