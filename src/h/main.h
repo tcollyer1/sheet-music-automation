@@ -18,6 +18,9 @@ void	toggleRecording(GtkWidget* widget, gpointer data);
 // FFT preparation & calculation
 void 	convertToComplexArray(float* samples, fftwf_complex* complex, int length);
 
+void 	saveOverlappedSamples(const float* samples, float* overlap, int len);
+void 	overlapWindow(const float* samples, const float* overlap, float* newSamples, int len);
+
 void	lowPassData(float* input, float* output, int length, int cutoff);
 
 void 	setUpHannWindow(float* windowData, int length);

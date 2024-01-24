@@ -5,12 +5,13 @@
 
 #include "../h/main.h"
 #include "../h/onsetsds.h"
+#include "../h/tinywav.h"
 
 #define REAL 0
 #define IMAG 1
 
 #define SAMPLE_RATE         22050
-#define WINDOW_SIZE         4096
+#define WINDOW_SIZE         2048//4096
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       1109    // For now, limit the range to three piano octaves from  
                                     // C3-C6, (but cap at C#6) so a frequency range of 
@@ -24,7 +25,7 @@
 #define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
                                     // for writing to the MIDI file to save on memory
                                     
-#define MEDIAN_SPAN         88      // Amount of previous frames to account for, for
+#define MEDIAN_SPAN         11//88      // Amount of previous frames to account for, for
                                     // onset detection. Around 11 is recommended for
                                     // a size 512 FFT; so around 88 for size 4096?
 
@@ -48,6 +49,8 @@ static int  bufIndex = 0;
 
 // OnsetsDS struct - onset detection
 OnsetsDS ods;
+
+TinyWav tw;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -97,7 +100,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         
         gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
         
-        displayBufferContent();
+        //displayBufferContent();
         
         totalLen = 0;
         bufIndex = 0;
@@ -272,7 +275,7 @@ char* getPitch(float freq)
         
         if (pitch != NULL)
         {
-            //printf("NOTE DETECTED: %s\n", pitch);
+            printf("\nNOTE DETECTED: %s", pitch);
         }
         
         // Otherwise assume background noise (so no note)
@@ -417,7 +420,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         //if (isOnset || wasSilence || prevAmplitude == 0.0f || strcmp(prevPitch, curPitch) != 0)
         if (isOnset || prevAmplitude == 0.0f)
         {
-            //printf("(NEW note)"); // New note attack
+            printf(" | (NEW note)"); // New note attack
             lastNoteLen = noteLen;
             noteLen = 1; // Reset note length
             
@@ -612,11 +615,47 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
+// Save 50% of the samples from previous run for the next run
+// for 50% window overlap
+void saveOverlappedSamples(const float* samples, float* overlap, int len)
+{
+    for (int i = 0; i < len / 2; i++)
+    {
+        overlap[i] = samples[len/2 + i];
+    }
+}
+
+// Overlap the windows at 50%
+void overlapWindow(const float* samples, const float* overlap, float* newSamples, int len)
+{
+    for (int i = 0; i < len / 2; i++)
+    {
+        //newSamples[i] = overlap[i];
+        newSamples[i] = (float)(overlap[i] + samples[i]) / 2.0f;
+    }
+    
+    for (int i = len / 2; i < len; i++)
+    {
+        //newSamples[i] = samples[i - len/2];
+        newSamples[i] = samples[i];
+    }
+}
+
 // Main function for processing microphone data.
 void* record(void* args)
 {
-    // Buffers to store data, window for windowing the data
+    bool firstRun = true;
+    
+    // Buffer to store audio samples
     float samples[WINDOW_SIZE];
+    
+    // Buffer to store samples to be overlapped with the next
+    // buffer of samples
+    float overlap[WINDOW_SIZE/2];
+    
+    // Buffer to store samples with overlap applied
+    float newSamples[WINDOW_SIZE];
+    
     float lowPassedSamples[WINDOW_SIZE];
     float window[WINDOW_SIZE];
     
@@ -706,15 +745,82 @@ void* record(void* args)
 
     printf("--- Recording... ---\n");
     
-    int     dsSize  = 0;
-    bool    onset   = false;
+    int     dsSize  = 0;        // Size of buffer after downsampling (for HPS)
+    bool    onset   = false;    // Onset flag
 
     // --- Main processing loop ---
+    
+    // Open .wav file to write to
+    tinywav_open_write(&tw,
+                        CHANNELS,
+                        SAMPLE_RATE,
+                        TW_FLOAT32,
+                        TW_INLINE,  
+                        "recording.wav");
+    
+    int times = 0;
+    
     while (running)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
         checkError(err);
+        
+        // Write samples to temporary .wav for FFT processing afterwards
+        tinywav_write_f(&tw, samples, WINDOW_SIZE);
+        
+        times++;
+    }
+    
+    tinywav_close_write(&tw);
+    
+    printf("\nSample collection stopped.\n");
+
+    err = Pa_StopStream(pStream);
+    checkError(err);
+
+    err = Pa_CloseStream(pStream);
+    checkError(err);
+    
+    printf("Stream closed.\n");
+
+    // --------------
+    
+    // Read from file and carry out FFT processing
+    tinywav_open_read(&tw, "recording.wav", TW_SPLIT);
+
+    for (int i = 0; i < times; i++)
+    {
+        float* samplePtrs[CHANNELS];
+        
+        for (int j = 0; j < CHANNELS; ++j)
+        {
+            samplePtrs[j] = samples + j * WINDOW_SIZE;
+        }
+        
+        tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
+        
+        if (firstRun)
+        {
+            // If first run - simply use the first set of 4096 samples
+            memcpy(newSamples, samples, sizeof(newSamples));
+            firstRun = false;
+        }
+        else
+        {            
+            /*Overlap the window
+            * ------------------
+            * Use a 50% overlap by taking the latter half of the samples
+            * from the previous window, and averaging it with the first 
+            * half of the new window of samples continuously each FFT cycle
+            * to reduce potential data loss brought about by windowing.
+            */
+            overlapWindow(samples, overlap, newSamples, WINDOW_SIZE);
+        }
+        
+        // Save the second half of the samples to be used in the next FFT
+        // cycle for overlapping
+        saveOverlappedSamples(samples, overlap, WINDOW_SIZE);
         
         /*Low-pass the data
         * -----------------
@@ -724,7 +830,8 @@ void* record(void* args)
         * For now, limit the range to three octaves from C3-C6, so a frequency
         * range of 130.8 Hz - 1108.73 Hz
         */
-        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        lowPassData(newSamples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -763,17 +870,8 @@ void* record(void* args)
         hps_getPeak(dsResult, dsSize, onset);
     }
     
-    printf("\nSample collection stopped.\n");
-
-    err = Pa_StopStream(pStream);
-    checkError(err);
-
-    err = Pa_CloseStream(pStream);
-    checkError(err);
+    tinywav_close_read(&tw);
     
-    printf("Stream closed.\n");
-
-    // --------------
     
     // Pa_Terminate() causes a segmentation fault when called on a separate thread...
 
