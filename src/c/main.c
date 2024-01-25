@@ -1,11 +1,12 @@
 #include <string.h>
 #include <stdio.h>
-#include <math.h> // M_PI, sqrt, sin, cos
+#include <math.h>       // M_PI, sqrt, sin, cos
 #include <pthread.h>
+#include <time.h>       // For timing the .wav file
 
-#include "../h/main.h"
-#include "../h/onsetsds.h"
-#include "../h/tinywav.h"
+#include "../include/main.h"
+#include "../include/onsetsds.h"
+#include "../include/tinywav.h"
 
 #define REAL 0
 #define IMAG 1
@@ -28,6 +29,9 @@
 #define MEDIAN_SPAN         11//88      // Amount of previous frames to account for, for
                                     // onset detection. Around 11 is recommended for
                                     // a size 512 FFT; so around 88 for size 4096?
+                                    
+#define NUM_HARMONICS       5       // Number of harmonics for the harmonic product spectrum
+                                    // to consider
 
 
 static int      running     = 0;
@@ -758,7 +762,8 @@ void* record(void* args)
                         TW_INLINE,  
                         "recording.wav");
     
-    int times = 0;
+    int numFrames = 0;  // Number of times samples are collected
+                        // (total number of frames processed)
     
     while (running)
     {
@@ -766,10 +771,10 @@ void* record(void* args)
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
         checkError(err);
         
-        // Write samples to temporary .wav for FFT processing afterwards
+        // Write samples to a .wav for FFT/other processing afterwards
         tinywav_write_f(&tw, samples, WINDOW_SIZE);
         
-        times++;
+        numFrames++;
     }
     
     tinywav_close_write(&tw);
@@ -784,13 +789,52 @@ void* record(void* args)
     
     printf("Stream closed.\n");
 
-    // --------------
+    /*********************************************************
+     * 
+     * PROCESSING THE AUDIO DATA
+     * -------------------------
+     * 
+     * 1.  Read in the .wav file the user just recorded.
+     * 2.  Acquire set of FP samples - overlapping by 50%.
+     *     This reduces data loss from windowing (step 4).
+     * 3.  Low pass the data to help filter out higher 
+     *     frequencies.
+     * 4.  Apply a Hann window to the data. This helps to
+     *     reduce spectral leakage.
+     * 5.  Format the data into complex numbers for the FFT.
+     * 6.  Carry out the FFT to acquire frequency data.
+     * 7.  Downsample and apply harmonic product spectrum for
+     *     a better fundamental frequency estimate.
+     * 8.  Calculate any onsets (from raw FFT output)
+     * 9.  Calculate fundamental pitch from downsampled HPS
+     *     output magnitudes, by looking for the peak, and
+     *     relating the frequency at this peak to a pitch.
+     * 10. Repeat for as long as the recording continues.
+     * 11. Combine to collect pitches and note lengths that
+     *     can then be processed into note on/off signals to
+     *     create the MIDI file, which can then be used by
+     *     the end user.
+     *    
+     ********************************************************/
+     
+    // This gives us the total number of samples in our .wav
+    int totalSamples = numFrames * WINDOW_SIZE;
+     
+    // Duration of the recording is equal to the total number of
+    // samples, divided by the sample rate
+    float timeSecs = (float)totalSamples / (float)SAMPLE_RATE;
     
-    // Read from file and carry out FFT processing
+    // Amount of time each frame accounts for
+    float frameTime = timeSecs / numFrames;
+    
+    // Read from .wav file and carry out all processing
     tinywav_open_read(&tw, "recording.wav", TW_SPLIT);
 
-    for (int i = 0; i < times; i++)
+    // Loop through all of the samples, frame by frame
+    for (int i = 0; i < numFrames; i++)
     {
+        // Set up pointers to samples, separated by channels
+        // (only one in our case however)
         float* samplePtrs[CHANNELS];
         
         for (int j = 0; j < CHANNELS; ++j)
@@ -802,7 +846,7 @@ void* record(void* args)
         
         if (firstRun)
         {
-            // If first run - simply use the first set of 4096 samples
+            // If first run - simply use the first set of samples
             memcpy(newSamples, samples, sizeof(newSamples));
             firstRun = false;
         }
@@ -879,6 +923,10 @@ void* record(void* args)
     /*err = Pa_Terminate();
     printf("\nStream terminated.\n");
     checkError(err);*/
+    
+    // Outputs everything in the buffer
+    displayBufferContent();
+    printf("\n(Each frame takes %f secs)\n", frameTime);
     
     fftwf_free(inp);
     fftwf_free(outp);
