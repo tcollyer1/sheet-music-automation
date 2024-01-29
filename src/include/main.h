@@ -34,10 +34,15 @@ void 	downsample(const fftwf_complex* result, float* out, int outLength, int idx
 void 	hps_getPeak(float* dsResult, int len, bool isOnset);
 float   interpolate(float first, float last);
 
-char* 	getPitch(float freq);
+char* 	getPitch(float freq, int* midiNote);
 
 // Adding to output buffers
-void 	pitchesAdd(char* pitch, int length);
+void 	pitchesAdd(char* pitch, int length, int midiNote);
 void 	displayBufferContent();
+
+// MIDI
+int 	getNoteType(float noteDur);
+void 	setMidiNotes();
+void 	outputMidi(float frameTime);
 
 #endif
