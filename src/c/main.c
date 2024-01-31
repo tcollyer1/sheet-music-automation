@@ -20,7 +20,7 @@
 #define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
-#define NOISE_FLOOR         0.1f    // Ensure the amplitude is at least this value
+#define NOISE_FLOOR         0.05f//0.1f    // Ensure the amplitude is at least this value
                                     // to help cancel out quieter noise
                                     
 #define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
@@ -144,6 +144,7 @@ void pitchesAdd(char* pitch, int length, int midiNote)
 {    
     strcpy(recPitches[bufIndex], pitch);
     recLengths[bufIndex] = length;
+    //printf("\n[!] Adding %s (%d) of length %d to position %d\n", pitch, midiNote, length, bufIndex);
     recMidiPitches[bufIndex] = midiNote;
     
     bufIndex++; // Make sure to increase buffer index for next value
@@ -182,39 +183,94 @@ void setMidiNotes()
     
     int midiVal = c3;
     
+    printf("\n=== MIDI TABLE ===\n");
+    
     // 37 notes between C3-C6
     for (int i = 0; i < 37; i++)
     {
         midiNotes[i] = midiVal;
         
+        printf("\n%s is %d", notes[i], midiNotes[i]);
+        
         midiVal++;
     }
+    
+    printf("\n===            ===\n");
 }
 
-// Get the note type for a given note duration (60bpm).
-int getNoteType(float noteDur)
-{
+// Get the note type for a given note duration.
+int getNoteType(float noteDur, float qNoteLen)
+{    
+    // qNoteLen represents the length in seconds a quarter note
+    // (crotchet) is expected to be. We calculate this in
+    // outputMidi() below
+    
     int noteType = 0;
     
-    if (noteDur == 0.5f)
+    if (noteDur == 0.0f)
     {
+        // Round to next smallest note (for now, QUAVER)
+        noteDur = 0.5f;
+    }
+    
+    // Semidemiquaver
+    if (noteDur == qNoteLen * 0.125f)
+    {
+        printf("as a SEMIDEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIDEMIQUAVER;
+    }
+    
+    // Semiquavers
+    else if (noteDur == qNoteLen * 0.25f)
+    {
+        printf("as a SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIQUAVER;
+    }
+    else if (noteDur == qNoteLen * 0.375f)
+    {
+        printf("as a DOTTED SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_SEMIQUAVER;
+    }
+    
+    // Quavers
+    else if (noteDur == qNoteLen * 0.5f)
+    {
+        printf("as a QUAVER\n====\n");
         noteType = MIDI_NOTE_QUAVER;
     }
-    else if (noteDur == 1.0f)
+    else if (noteDur == qNoteLen * 0.75f)
     {
+        printf("as a DOTTED QUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_QUAVER;
+    }
+    
+    // Crotchets
+    else if (noteDur == qNoteLen)
+    {
+        printf("as a CROTCHET\n====\n");
         noteType = MIDI_NOTE_CROCHET;
     }
-    else if (noteDur == 1.5f)
+    else if (noteDur == qNoteLen * 1.5f)
     {
+        printf("as a DOTTED CROTCHET\n====\n");
         noteType = MIDI_NOTE_DOTTED_CROCHET;
     }
-    else if (noteDur == 2.0f)
+    
+    // Minims
+    else if (noteDur == qNoteLen * 2.0f)
     {
+        printf("as a MINIM\n====\n");
         noteType = MIDI_NOTE_MINIM;
     }
-    else if (noteDur == 2.5f)
+    else if (noteDur == qNoteLen * 3.0f)
     {
+        printf("as a DOTTED MINIM\n====\n");
         noteType = MIDI_NOTE_DOTTED_MINIM;
+    }
+    
+    else
+    {
+        noteType = getNoteType(noteDur - 0.25f, qNoteLen);
     }
     
     return (noteType);
@@ -223,6 +279,11 @@ int getNoteType(float noteDur)
 // Write the contents of the buffers to a MIDI file.
 void outputMidi(float frameTime)
 {    
+    // For now, set tempo here
+    int tempo = 60;
+    
+    int track = 1;
+    
     // Try to create MIDI file
     MIDI_FILE* midiOutput = midiFileCreate("output.mid", TRUE); // (True for overwrite file if exists)
     
@@ -231,19 +292,35 @@ void outputMidi(float frameTime)
         // Assign tempo of 60bpm for now.
         // Starts at track 1. May need to start it from
         // track 0 instead
-        midiSongAddTempo(midiOutput, 1, 60);
+        midiSongAddTempo(midiOutput, track, tempo);
         
         // Set key to C major for now.
-        midiSongAddKeySig(midiOutput, 1, keyCMaj);
+        midiSongAddKeySig(midiOutput, track, keyCMaj);
         
         // Set current channel before writing data (only using one)
-        midiFileSetTracksDefaultChannel(midiOutput, 1, MIDI_CHANNEL_1);
+        midiFileSetTracksDefaultChannel(midiOutput, track, MIDI_CHANNEL_1);
         
         // Set instrument. Not really essential for its end purpose
-        midiTrackAddProgramChange(midiOutput, 1, MIDI_PATCH_ELECTRIC_GRAND_PIANO);
+        midiTrackAddProgramChange(midiOutput, track, MIDI_PATCH_ELECTRIC_GRAND_PIANO);
         
         // Simple 4/4 time for now
-        midiSongAddSimpleTimeSig(midiOutput, 1, 4, MIDI_NOTE_CROCHET);
+        midiSongAddSimpleTimeSig(midiOutput, track, 4, MIDI_NOTE_CROCHET);
+        
+        // TEST
+        /*midiTrackAddNote(midiOutput, track, 48, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 50, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddRest(midiOutput, track, MIDI_NOTE_QUAVER, FALSE);
+        midiTrackAddNote(midiOutput, track, 52, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 53, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 55, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
+        */
+    
+        // Get the length of time one beat (crotchet) will account for given
+        // the tempo
+        float beatsPerSec = (float)tempo / 60;
+        
+        // Fastest note to detect is quavers, FOR NOW.
+        float minimumNoteDur = beatsPerSec / 2;
         
         // Iterate through our buffers to write out the data
         for (int i = 0; i < totalLen; i++)
@@ -251,16 +328,24 @@ void outputMidi(float frameTime)
             // Get note length by multiplying the duration of the frame
             // by the number of frames the note persists for, then rounding
             // this to (for now) the nearest half-note (quaver).
-            float noteLen = (float)round((frameTime * recLengths[i]) * 2) / 2;
+            float noteLen = (float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur;
             
             // If not silence
             if (strcmp(recPitches[i], "N/A") != 0)
             {
-                midiTrackAddNote(midiOutput, 1, recMidiPitches[i], getNoteType(noteLen), MIDI_VOL_HALF, TRUE, FALSE);
+                printf("\n====\nWriting %s (MIDI PITCH %d)\n", recPitches[i], recMidiPitches[i]);
+                
+                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
             }
             else
             {
-                midiTrackAddRest(midiOutput, 1, getNoteType(noteLen), TRUE);
+                // Not invalid length of silence
+                if (recLengths[i] > 1)
+                {
+                    printf("\n====\nWriting a REST\n");
+                    
+                    midiTrackAddRest(midiOutput, track, getNoteType(noteLen, beatsPerSec), FALSE);
+                }
             }
         }
         
@@ -388,7 +473,7 @@ char* getPitch(float freq, int* midiNote)
         
         if (pitch != NULL)
         {
-            printf("\nNOTE DETECTED: %s", pitch);
+            printf("\nNOTE DETECTED: %s (MIDI %d)", pitch, (*midiNote));
         }
         
         // Otherwise assume background noise (so no note)
@@ -426,6 +511,9 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     int lastNoteLen = 0;
     
     float threshold = 0.3f;
+    
+    static int tempNoteBuf[20];
+    static int tempNoteCount[20];
     
     // Reset static values if a new recording
     if (firstRun)
@@ -542,6 +630,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         {
             printf(" | (NEW note)"); // New note attack
             lastNoteLen = noteLen;
+            //printf(" | saved lastNoteLen as %d", lastNoteLen);
             noteLen = 1; // Reset note length
             
             newNote = 1; // Flag new note
@@ -549,10 +638,16 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
             //printf(" | LEN: %d\n", noteLen);
         }
         else
-        {
+        {         
+            if (noteLen < 20)
+            {
+                tempNoteBuf[noteLen] = curMidiNote;
+                tempNoteCount[noteLen] = -1;
+            }
+               
             // This is likely a continuation of the same note being played, so continue to increase
             // the length
-            //printf("(SAME note)"); // Note decay
+            //printf(" | (SAME note)"); // Note decay
             noteLen++;
             
             //printf(" | LEN: %d\n", noteLen);
@@ -583,6 +678,9 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     {
         strcpy(prevPitch, curPitch);
         prevMidiNote = curMidiNote;
+        
+        tempNoteBuf[0] = prevMidiNote;
+        tempNoteCount[0] = -1;
     }
     // If a new note after a period of silence
     else if (newNote && wasSilence)
@@ -597,14 +695,89 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     // If a new note (not the first) after another note, add the last note vals to buffers
     else if (newNote)
     {
-        pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        // Where the detected frequency can sometimes fluctuate,
+        // get the most common detected note
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            int count = 1;
+            
+            for (int j = i + 1; j < lastNoteLen; j++)
+            {
+                if (tempNoteBuf[i] == tempNoteBuf[j])
+                {
+                    count++;
+                    tempNoteCount[j] = 0;
+                }
+            }
+            
+            if (tempNoteCount[i] != 0)
+            {
+                tempNoteCount[i] = count;
+            }
+        }
+        
+        int highest = 0;
+        int highestIdx = 0;
+        
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            if (tempNoteCount[i] > highest)
+            {
+                highest = tempNoteCount[i];
+                highestIdx = i;
+            }
+        }
+        
+        int realMidiNote = tempNoteBuf[highestIdx];
+        
+        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
         
         strcpy(prevPitch, curPitch);
+        
+        tempNoteBuf[0] = prevMidiNote;
+        tempNoteCount[0] = -1;
     }   
     // If we're starting a point of silence (rests), store the last pitch
     else if (silenceLen == 1)
     {
-        pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        // Where the detected frequency can sometimes fluctuate,
+        // get the most common detected note
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            int count = 1;
+            
+            for (int j = i + 1; j < lastNoteLen; j++)
+            {
+                if (tempNoteBuf[i] == tempNoteBuf[j])
+                {
+                    count++;
+                    tempNoteCount[j] = 0;
+                }
+            }
+            
+            if (tempNoteCount[i] != 0)
+            {
+                tempNoteCount[i] = count;
+            }
+        }
+        
+        int highest = 0;
+        int highestIdx = 0;
+        
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            if (tempNoteCount[i] > highest)
+            {
+                highest = tempNoteCount[i];
+                highestIdx = i;
+            }
+        }
+        
+        int realMidiNote = tempNoteBuf[highestIdx];
+        
+        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
 
         strcpy(prevPitch, "N/A");
         prevMidiNote = 0;
