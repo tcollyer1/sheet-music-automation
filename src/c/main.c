@@ -176,10 +176,11 @@ void displayBufferContent()
 // Assign MIDI note values per pitch C3-C6
 void setMidiNotes()
 {
-    // If C4 is 60, C3 note is 48 in MIDI terms
-    // ...
-    // Apparently actually C5 is 60...? So C3 is 36
-    int c3 = MIDI_NOTE_C3;
+    // C3 is 36 in the MIDI library we're using.
+    // However other sources suggest C3 should be 48, 
+    // which is what C4 is set to.
+    // The MIDI output is also an octave lower than expected.
+    int c3 = MIDI_NOTE_C4;
     
     int midiVal = c3;
     
