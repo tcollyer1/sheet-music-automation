@@ -281,7 +281,7 @@ int getNoteType(float noteDur, float qNoteLen)
 void outputMidi(float frameTime)
 {    
     // For now, set tempo here
-    int tempo = 60;
+    int tempo = 120;
     
     int track = 1;
     
@@ -323,18 +323,26 @@ void outputMidi(float frameTime)
         // Fastest note to detect is quavers, FOR NOW.
         float minimumNoteDur = beatsPerSec / 2;
         
+        printf("\n[CROTCHETS/s: %f \t QUAVER NOTE LEN: %f]\n", beatsPerSec, minimumNoteDur);
+        
         // Iterate through our buffers to write out the data
         for (int i = 0; i < totalLen; i++)
         {
             // Get note length by multiplying the duration of the frame
             // by the number of frames the note persists for, then rounding
             // this to (for now) the nearest half-note (quaver).
-            float noteLen = (float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur;
+            float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            
+            // For now - in case it rounds down to 0
+            if (noteLen == 0.0f)
+            {
+                noteLen = minimumNoteDur;
+            }
             
             // If not silence
             if (strcmp(recPitches[i], "N/A") != 0)
             {
-                printf("\n====\nWriting %s (MIDI PITCH %d)\n", recPitches[i], recMidiPitches[i]);
+                printf("\n====\nWriting %s (MIDI PITCH %d, (float)round((%f * %d) / %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, noteLen);
                 
                 midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
             }
@@ -343,7 +351,7 @@ void outputMidi(float frameTime)
                 // Not invalid length of silence
                 if (recLengths[i] > 1)
                 {
-                    printf("\n====\nWriting a REST\n");
+                    printf("\n====\nWriting a REST (NOTE LEN %f)\n", noteLen);
                     
                     midiTrackAddRest(midiOutput, track, getNoteType(noteLen, beatsPerSec), FALSE);
                 }
