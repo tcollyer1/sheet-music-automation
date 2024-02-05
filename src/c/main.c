@@ -887,28 +887,66 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
 
 // Save 50% of the samples from previous run for the next run
 // for 50% window overlap
-void saveOverlappedSamples(const float* samples, float* overlap, int len)
+void saveOverlappedSamples(const float* samples, float* overlapPrev, int len)
 {
+    // Save 2nd half of current samples for next iteration
     for (int i = 0; i < len / 2; i++)
     {
-        overlap[i] = samples[len/2 + i];
+        overlapPrev[i] = samples[len/2 + i];
     }
 }
 
 // Overlap the windows at 50%
-void overlapWindow(const float* samples, const float* overlap, float* newSamples, int len)
+void overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun)
 {
-    for (int i = 0; i < len / 2; i++)
+    if ((*firstRun))
     {
-        //newSamples[i] = overlap[i];
-        newSamples[i] = (float)(overlap[i] + samples[i]) / 2.0f;
+        // If the first run - first half is just the samples as is,
+        // second half is the second half of the samples averaged with
+        // the first half of the next set of samples for 50% overlap
+        for (int i = 0; i < len / 2; i++)
+        {
+            newSamples[i] = samples[i];
+        }
+
+        for (int i = len / 2; i < len; i++)
+        {
+            newSamples[i] = (float)(nextSamples[i - len/2] + samples[i]) / 2.0f;
+        }
+
+        (*firstRun) = false;
     }
-    
-    for (int i = len / 2; i < len; i++)
+    else if (lastRun)
     {
-        //newSamples[i] = samples[i - len/2];
-        newSamples[i] = samples[i];
+        // If the last run - first half is the first half of the samples
+        // averaged with the last half of the previous set of samples,
+        // the second half is the just the remainder of the samples
+        for (int i = 0; i < len / 2; i++)
+        {
+            newSamples[i] = (float)(overlapPrev[i] + samples[i]) / 2.0f;
+        }
+
+        for (int i = len / 2; i < len; i++)
+        {
+            newSamples[i] = samples[i];
+        }
     }
+    else
+    {
+        // On all other runs - first half should be the current samples
+        // averaged with the second half of the previous set of samples,
+        // and the second half should be the current samples averaged with
+        // the first half of the next set of samples
+        for (int i = 0; i < len / 2; i++)
+        {
+            newSamples[i] = (float)(overlapPrev[i] + samples[i]) / 2.0f;
+        }
+
+        for (int i = len / 2; i < len; i++)
+        {
+            newSamples[i] = (float)(nextSamples[i - len / 2] + samples[i]) / 2.0f;
+        }
+    }    
 }
 
 // Main function for processing microphone data.
@@ -918,13 +956,18 @@ void* record(void* args)
     
     // Buffer to store audio samples
     float samples[WINDOW_SIZE];
+    float nextSamples[WINDOW_SIZE];
     
     // Buffer to store samples to be overlapped with the next
     // buffer of samples
-    float overlap[WINDOW_SIZE/2];
+    float overlapPrev[WINDOW_SIZE/2];
+    //float overlapNext[WINDOW_SIZE/2];
     
     // Buffer to store samples with overlap applied
     float newSamples[WINDOW_SIZE];
+
+    // Save the pre-read samples for the next cycle
+    float savedNextSamples[WINDOW_SIZE];
     
     float lowPassedSamples[WINDOW_SIZE];
     float window[WINDOW_SIZE];
@@ -1102,22 +1145,59 @@ void* record(void* args)
         // Set up pointers to samples, separated by channels
         // (only one in our case however)
         float* samplePtrs[CHANNELS];
+        float* nextSamplePtrs[CHANNELS];
         
         for (int j = 0; j < CHANNELS; ++j)
         {
-            samplePtrs[j] = samples + j * WINDOW_SIZE;
+            if (firstRun)
+            {
+                samplePtrs[j] = samples + j * WINDOW_SIZE;
+            }
+            if (i < numFrames - 1)
+            {
+                nextSamplePtrs[j] = nextSamples + j * WINDOW_SIZE;
+            }            
+        }    
+
+        if (firstRun)
+        {
+            // Read twice on the first run - once for the samples this cycle,
+            // again for the next cycle's samples for overlapping
+            tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
+            tinywav_read_f(&tw, nextSamplePtrs, WINDOW_SIZE);
+
+            // Copy next set of samples to be used on the next cycle
+            memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
+        }
+        // Else if not the last run
+        else if (i < numFrames - 1)
+        {
+            // Copy previously acquired samples for this cycle to "current" samples array
+            memcpy(samples, savedNextSamples, sizeof(samples));
+
+            tinywav_read_f(&tw, nextSamplePtrs, WINDOW_SIZE);
+
+            // Copy next acquired samples to be used on the next cycle
+            memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
+        }
+        // Last run
+        else
+        {
+            // Copy previously acquired samples for this cycle to "current" samples array
+            memcpy(samples, savedNextSamples, sizeof(samples));
+
+            memset(nextSamples, 0, sizeof(nextSamples));
         }
         
-        tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
         
-        if (firstRun)
+        /*if (firstRun)
         {
             // If first run - simply use the first set of samples
             memcpy(newSamples, samples, sizeof(newSamples));
             firstRun = false;
         }
         else
-        {            
+        {  */          
             /*Overlap the window
             * ------------------
             * Use a 50% overlap by taking the latter half of the samples
@@ -1125,12 +1205,12 @@ void* record(void* args)
             * half of the new window of samples continuously each FFT cycle
             * to reduce potential data loss brought about by windowing.
             */
-            overlapWindow(samples, overlap, newSamples, WINDOW_SIZE);
-        }
+            overlapWindow(samples, nextSamples, overlapPrev, newSamples, WINDOW_SIZE, &firstRun, (i < numFrames - 1));
+        //}
         
         // Save the second half of the samples to be used in the next FFT
         // cycle for overlapping
-        saveOverlappedSamples(samples, overlap, WINDOW_SIZE);
+        saveOverlappedSamples(samples, overlapPrev, WINDOW_SIZE);
         
         /*Low-pass the data
         * -----------------
