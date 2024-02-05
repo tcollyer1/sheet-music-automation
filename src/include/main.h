@@ -18,6 +18,9 @@ void	toggleRecording(GtkWidget* widget, gpointer data);
 // FFT preparation & calculation
 void 	convertToComplexArray(float* samples, fftwf_complex* complex, int length);
 
+void 	saveOverlappedSamples(const float* samples, float* overlap, int len);
+void 	overlapWindow(const float* samples, const float* overlap, float* newSamples, int len);
+
 void	lowPassData(float* input, float* output, int length, int cutoff);
 
 void 	setUpHannWindow(float* windowData, int length);
@@ -31,10 +34,15 @@ void 	downsample(const fftwf_complex* result, float* out, int outLength, int idx
 void 	hps_getPeak(float* dsResult, int len, bool isOnset);
 float   interpolate(float first, float last);
 
-char* 	getPitch(float freq);
+char* 	getPitch(float freq, int* midiNote);
 
 // Adding to output buffers
-void 	pitchesAdd(char* pitch, int length);
+void 	pitchesAdd(char* pitch, int length, int midiNote);
 void 	displayBufferContent();
+
+// MIDI
+int 	getNoteType(float noteDur, float qNoteLen);
+void 	setMidiNotes();
+void 	outputMidi(float frameTime);
 
 #endif

@@ -1,16 +1,18 @@
 #include <string.h>
 #include <stdio.h>
-#include <math.h> // M_PI, sqrt, sin, cos
+#include <math.h>       // M_PI, sqrt, sin, cos
 #include <pthread.h>
 
-#include "../h/main.h"
-#include "../h/onsetsds.h"
+#include "../include/main.h"
+#include "../include/onsetsds.h"
+#include "../include/tinywav.h"
+#include "../include/midifile.h"
 
 #define REAL 0
 #define IMAG 1
 
 #define SAMPLE_RATE         22050
-#define WINDOW_SIZE         4096
+#define WINDOW_SIZE         2048//4096
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       1109    // For now, limit the range to three piano octaves from  
                                     // C3-C6, (but cap at C#6) so a frequency range of 
@@ -18,15 +20,18 @@
 #define MIN_FREQUENCY       130
 #define BIN_SIZE            ((float)SAMPLE_RATE / (float)WINDOW_SIZE)
 
-#define NOISE_FLOOR         0.1f    // Ensure the amplitude is at least this value
+#define NOISE_FLOOR         0.05f//0.1f    // Ensure the amplitude is at least this value
                                     // to help cancel out quieter noise
                                     
 #define MAX_NOTES           1000    // Maximum size of the buffer to contain note data
                                     // for writing to the MIDI file to save on memory
                                     
-#define MEDIAN_SPAN         88      // Amount of previous frames to account for, for
+#define MEDIAN_SPAN         11//88      // Amount of previous frames to account for, for
                                     // onset detection. Around 11 is recommended for
                                     // a size 512 FFT; so around 88 for size 4096?
+                                    
+#define NUM_HARMONICS       5       // Number of harmonics for the harmonic product spectrum
+                                    // to consider
 
 
 static int      running     = 0;
@@ -43,11 +48,16 @@ pthread_mutex_t procLock;
 // Buffers to store the output data to be translated into MIDI notes
 char        recPitches[MAX_NOTES][4];
 int         recLengths[MAX_NOTES];
+int         recMidiPitches[MAX_NOTES];
 static int  totalLen = 0;
 static int  bufIndex = 0;
 
 // OnsetsDS struct - onset detection
 OnsetsDS ods;
+
+// For reading from/writing to .wav to save user recording for 
+// analysis
+TinyWav tw;
 
 // For now, manually establish notes and corresponding
 // frequencies
@@ -58,6 +68,9 @@ char* notes[37] =
     "C5", "C#5", "D5", "D#5", "E5", "F5", "F#5", "G5", "G#5", "A5", "Bb5", "B5",
     "C6"
 };
+
+// Will store all of the corresponding MIDI pitch values per note
+int midiNotes[37];
 
 // Add C#6 purely for upper bound checking in case the note detected is a C6
 float frequencies[38] = 
@@ -97,8 +110,6 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         
         gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
         
-        displayBufferContent();
-        
         totalLen = 0;
         bufIndex = 0;
     }
@@ -129,10 +140,12 @@ void toggleRecording(GtkWidget* widget, gpointer data)
 }
 
 // Functions for appending to output pitch/length buffers
-void pitchesAdd(char* pitch, int length)
+void pitchesAdd(char* pitch, int length, int midiNote)
 {    
     strcpy(recPitches[bufIndex], pitch);
     recLengths[bufIndex] = length;
+    //printf("\n[!] Adding %s (%d) of length %d to position %d\n", pitch, midiNote, length, bufIndex);
+    recMidiPitches[bufIndex] = midiNote;
     
     bufIndex++; // Make sure to increase buffer index for next value
     totalLen = bufIndex;
@@ -158,6 +171,194 @@ void displayBufferContent()
     }
     
     printf("\n");
+}
+
+// Assign MIDI note values per pitch C3-C6
+void setMidiNotes()
+{
+    // C3 is 36 in the MIDI library we're using.
+    // However other sources suggest C3 should be 48, 
+    // which is what C4 is set to.
+    // The MIDI output is also an octave lower than expected.
+    int c3 = MIDI_NOTE_C4;
+    
+    int midiVal = c3;
+    
+    printf("\n=== MIDI TABLE ===\n");
+    
+    // 37 notes between C3-C6
+    for (int i = 0; i < 37; i++)
+    {
+        midiNotes[i] = midiVal;
+        
+        printf("\n%s is %d", notes[i], midiNotes[i]);
+        
+        midiVal++;
+    }
+    
+    printf("\n===            ===\n");
+}
+
+// Get the note type for a given note duration.
+int getNoteType(float noteDur, float qNoteLen)
+{    
+    // qNoteLen represents the length in seconds a quarter note
+    // (crotchet) is expected to be. We calculate this in
+    // outputMidi() below
+    
+    int noteType = 0;
+    
+    if (noteDur == 0.0f)
+    {
+        // Round to next smallest note (for now, QUAVER)
+        noteDur = 0.5f;
+    }
+    
+    // Semidemiquaver
+    if (noteDur == qNoteLen * 0.125f)
+    {
+        printf("as a SEMIDEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIDEMIQUAVER;
+    }
+    
+    // Semiquavers
+    else if (noteDur == qNoteLen * 0.25f)
+    {
+        printf("as a SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIQUAVER;
+    }
+    else if (noteDur == qNoteLen * 0.375f)
+    {
+        printf("as a DOTTED SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_SEMIQUAVER;
+    }
+    
+    // Quavers
+    else if (noteDur == qNoteLen * 0.5f)
+    {
+        printf("as a QUAVER\n====\n");
+        noteType = MIDI_NOTE_QUAVER;
+    }
+    else if (noteDur == qNoteLen * 0.75f)
+    {
+        printf("as a DOTTED QUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_QUAVER;
+    }
+    
+    // Crotchets
+    else if (noteDur == qNoteLen)
+    {
+        printf("as a CROTCHET\n====\n");
+        noteType = MIDI_NOTE_CROCHET;
+    }
+    else if (noteDur == qNoteLen * 1.5f)
+    {
+        printf("as a DOTTED CROTCHET\n====\n");
+        noteType = MIDI_NOTE_DOTTED_CROCHET;
+    }
+    
+    // Minims
+    else if (noteDur == qNoteLen * 2.0f)
+    {
+        printf("as a MINIM\n====\n");
+        noteType = MIDI_NOTE_MINIM;
+    }
+    else if (noteDur == qNoteLen * 3.0f)
+    {
+        printf("as a DOTTED MINIM\n====\n");
+        noteType = MIDI_NOTE_DOTTED_MINIM;
+    }
+    
+    else
+    {
+        noteType = getNoteType(noteDur - 0.25f, qNoteLen);
+    }
+    
+    return (noteType);
+}
+
+// Write the contents of the buffers to a MIDI file.
+void outputMidi(float frameTime)
+{    
+    // For now, set tempo here
+    int tempo = 60;
+    
+    int track = 1;
+    
+    // Try to create MIDI file
+    MIDI_FILE* midiOutput = midiFileCreate("output.mid", TRUE); // (True for overwrite file if exists)
+    
+    if (midiOutput)
+    {
+        // Assign tempo of 60bpm for now.
+        // Starts at track 1. May need to start it from
+        // track 0 instead
+        midiSongAddTempo(midiOutput, track, tempo);
+        
+        // Set key to C major for now.
+        midiSongAddKeySig(midiOutput, track, keyCMaj);
+        
+        // Set current channel before writing data (only using one)
+        midiFileSetTracksDefaultChannel(midiOutput, track, MIDI_CHANNEL_1);
+        
+        // Set instrument. Not really essential for its end purpose
+        midiTrackAddProgramChange(midiOutput, track, MIDI_PATCH_ELECTRIC_GRAND_PIANO);
+        
+        // Simple 4/4 time for now
+        midiSongAddSimpleTimeSig(midiOutput, track, 4, MIDI_NOTE_CROCHET);
+        
+        // TEST
+        /*midiTrackAddNote(midiOutput, track, 48, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 50, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddRest(midiOutput, track, MIDI_NOTE_QUAVER, FALSE);
+        midiTrackAddNote(midiOutput, track, 52, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 53, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
+        midiTrackAddNote(midiOutput, track, 55, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
+        */
+    
+        // Get the length of time one beat (crotchet) will account for given
+        // the tempo
+        float beatsPerSec = (float)tempo / 60;
+        
+        // Fastest note to detect is quavers, FOR NOW.
+        float minimumNoteDur = beatsPerSec / 2;
+        
+        // Iterate through our buffers to write out the data
+        for (int i = 0; i < totalLen; i++)
+        {
+            // Get note length by multiplying the duration of the frame
+            // by the number of frames the note persists for, then rounding
+            // this to (for now) the nearest half-note (quaver).
+            float noteLen = (float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur;
+            
+            // If not silence
+            if (strcmp(recPitches[i], "N/A") != 0)
+            {
+                printf("\n====\nWriting %s (MIDI PITCH %d)\n", recPitches[i], recMidiPitches[i]);
+                
+                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
+            }
+            else
+            {
+                // Not invalid length of silence
+                if (recLengths[i] > 1)
+                {
+                    printf("\n====\nWriting a REST\n");
+                    
+                    midiTrackAddRest(midiOutput, track, getNoteType(noteLen, beatsPerSec), FALSE);
+                }
+            }
+        }
+        
+        midiFileClose(midiOutput);
+        
+        printf("\nMIDI file output.mid successfully created.\n");
+    }
+    else
+    {
+        // If MIDi file creation fails
+        printf("\n[!] ERROR: Failed to create MIDI file.\n");
+    }
 }
 
 // Displays the text of a PortAudio error
@@ -238,7 +439,7 @@ float calcMagnitude(float real, float imaginary)
 }
 
 // Prints the (estimated) pitch of a note based on a frequency.
-char* getPitch(float freq)
+char* getPitch(float freq, int* midiNote)
 {    
     char* pitch = NULL;
     int found = 0;
@@ -260,6 +461,7 @@ char* getPitch(float freq)
                 if (abs(frequencies[i] - freq) < abs(frequencies[i + 1] - freq))
                 {
                     pitch = notes[i];
+                    (*midiNote) = midiNotes[i];
                     found = 1;
                 }
             }
@@ -272,7 +474,7 @@ char* getPitch(float freq)
         
         if (pitch != NULL)
         {
-            //printf("NOTE DETECTED: %s\n", pitch);
+            printf("\nNOTE DETECTED: %s (MIDI %d)", pitch, (*midiNote));
         }
         
         // Otherwise assume background noise (so no note)
@@ -302,11 +504,17 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     static char prevPitch[4];
     static int lastPeakBin = 0;
     char* curPitch;
+    static int prevMidiNote = 0;
+    int curMidiNote = 0;
+    
     int newNote = 0;
     int wasSilence = 0;
     int lastNoteLen = 0;
     
     float threshold = 0.3f;
+    
+    static int tempNoteBuf[20];
+    static int tempNoteCount[20];
     
     // Reset static values if a new recording
     if (firstRun)
@@ -316,6 +524,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
 
         silenceLen = 0;
         lastPeakBin = 0;
+        prevMidiNote = 0;
         
         firstRun = 0;
     }
@@ -387,7 +596,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     }
     
     // Estimate the pitch based on the highest frequency reported
-    curPitch = getPitch(peakFreq);
+    curPitch = getPitch(peakFreq, &curMidiNote);
     
     // If note detected - 
     if (peakFreq != 0.0f)
@@ -399,68 +608,51 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         
         //printf("Amplitude: %f", highest);
         
-        /* If the amplitude of this tone is higher than the previous, this MIGHT indicate
-        * a new note being played.
-        *
-        * When held, a note has a decay period, where its amplitude reduces - 
-        * therefore this COULD indicate the same note being played, if detected again.
-        * Realistically, this will probably fluctuate a lot so will not be very accurate.
+        /*If the onset detection function has flagged an onset in this window
+        * or this is the first note the user has played during the recording
+        * (no previous amplitude set), then we say this is a new note.
         * 
-        * This is why we also check if the sum of all of the magnitudes from the whole
-        * frequency spectrum is also decreasing - if this is the case, the note may also be
-        * decaying.
-        *
-        * As soon as the amplitude or sum of all the magnitudes increase again, or the pitch 
-        * changes, it could be that a new note is being played.
+        * When a new note is detected, the previous detected note's identified
+        * pitch and length value are buffered. The current new note may continue
+        * into the next window, at which point we say this is the SAME note.
+        * 
+        * This is where the onset detection function has not flagged a different
+        * onset, therefore it's implied that this note has continued.
+        * 
+        * As long as the "same" note is detected, its length value increases to
+        * indicate how many successive windows in which it continues, and is stored
+        * upon the next new note being tracked.
+        * 
+        * This "length" value can then be used to calculate the actual note length.
         */
         
         //if (isOnset || wasSilence || prevAmplitude == 0.0f || strcmp(prevPitch, curPitch) != 0)
         if (isOnset || prevAmplitude == 0.0f)
         {
-            //printf("(NEW note)"); // New note attack
-            lastNoteLen = noteLen;
-            noteLen = 1; // Reset note length
-            
-            newNote = 1; // Flag new note
-            
-            //printf(" | LEN: %d\n", noteLen);
-        }
-        else
-        {
-            // This is likely a continuation of the same note being played, so continue to increase
-            // the length
-            //printf("(SAME note)"); // Note decay
-            noteLen++;
-            
-            //printf(" | LEN: %d\n", noteLen);
-        }
-        
-        /*if ((strcmp(prevPitch, curPitch) == 0 && (magSum <= lastMagSum || highest < prevAmplitude)) 
-            && !wasSilence 
-            && prevAmplitude != 0.0f)
-        {
-            // This is likely a continuation of the same note being played, so continue to increase
-            // the length
-            printf(" | (SAME note)"); // Note decay
-            noteLen++;
-            
-            lastMagSum = magSum;
-            
-            printf(" | LEN: %d", noteLen);
-        }
-        else
-        {
             printf(" | (NEW note)"); // New note attack
             lastNoteLen = noteLen;
+            //printf(" | saved lastNoteLen as %d", lastNoteLen);
             noteLen = 1; // Reset note length
             
             newNote = 1; // Flag new note
             
-            lastMagSum = magSum;
+            //printf(" | LEN: %d\n", noteLen);
+        }
+        else
+        {         
+            if (noteLen < 20)
+            {
+                tempNoteBuf[noteLen] = curMidiNote;
+                tempNoteCount[noteLen] = -1;
+            }
+               
+            // This is likely a continuation of the same note being played, so continue to increase
+            // the length
+            //printf(" | (SAME note)"); // Note decay
+            noteLen++;
             
-            printf(" | LEN: %d", noteLen);
-        }*/
-        
+            //printf(" | LEN: %d\n", noteLen);
+        }        
         
         lastPeakBin = peakBinNo;
         
@@ -486,29 +678,110 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     if (newNote && lastNoteLen == 0)
     {
         strcpy(prevPitch, curPitch);
+        prevMidiNote = curMidiNote;
+        
+        tempNoteBuf[0] = prevMidiNote;
+        tempNoteCount[0] = -1;
     }
     // If a new note after a period of silence
     else if (newNote && wasSilence)
     {
-        pitchesAdd(prevPitch, silenceLen);
+        pitchesAdd(prevPitch, silenceLen, prevMidiNote);
 
         silenceLen = 0;
 
         strcpy(prevPitch, curPitch);
+        prevMidiNote = curMidiNote;
     }
     // If a new note (not the first) after another note, add the last note vals to buffers
     else if (newNote)
     {
-        pitchesAdd(prevPitch, lastNoteLen);
+        // Where the detected frequency can sometimes fluctuate,
+        // get the most common detected note
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            int count = 1;
+            
+            for (int j = i + 1; j < lastNoteLen; j++)
+            {
+                if (tempNoteBuf[i] == tempNoteBuf[j])
+                {
+                    count++;
+                    tempNoteCount[j] = 0;
+                }
+            }
+            
+            if (tempNoteCount[i] != 0)
+            {
+                tempNoteCount[i] = count;
+            }
+        }
+        
+        int highest = 0;
+        int highestIdx = 0;
+        
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            if (tempNoteCount[i] > highest)
+            {
+                highest = tempNoteCount[i];
+                highestIdx = i;
+            }
+        }
+        
+        int realMidiNote = tempNoteBuf[highestIdx];
+        
+        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
         
         strcpy(prevPitch, curPitch);
+        
+        tempNoteBuf[0] = prevMidiNote;
+        tempNoteCount[0] = -1;
     }   
     // If we're starting a point of silence (rests), store the last pitch
     else if (silenceLen == 1)
     {
-        pitchesAdd(prevPitch, lastNoteLen);
+        // Where the detected frequency can sometimes fluctuate,
+        // get the most common detected note
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            int count = 1;
+            
+            for (int j = i + 1; j < lastNoteLen; j++)
+            {
+                if (tempNoteBuf[i] == tempNoteBuf[j])
+                {
+                    count++;
+                    tempNoteCount[j] = 0;
+                }
+            }
+            
+            if (tempNoteCount[i] != 0)
+            {
+                tempNoteCount[i] = count;
+            }
+        }
+        
+        int highest = 0;
+        int highestIdx = 0;
+        
+        for (int i = 0; i < lastNoteLen; i++)
+        {
+            if (tempNoteCount[i] > highest)
+            {
+                highest = tempNoteCount[i];
+                highestIdx = i;
+            }
+        }
+        
+        int realMidiNote = tempNoteBuf[highestIdx];
+        
+        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+        pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
 
         strcpy(prevPitch, "N/A");
+        prevMidiNote = 0;
     }
 }
 
@@ -612,11 +885,47 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     i->suggestedLatency = Pa_GetDeviceInfo(inpDevice)->defaultHighInputLatency;
 }
 
+// Save 50% of the samples from previous run for the next run
+// for 50% window overlap
+void saveOverlappedSamples(const float* samples, float* overlap, int len)
+{
+    for (int i = 0; i < len / 2; i++)
+    {
+        overlap[i] = samples[len/2 + i];
+    }
+}
+
+// Overlap the windows at 50%
+void overlapWindow(const float* samples, const float* overlap, float* newSamples, int len)
+{
+    for (int i = 0; i < len / 2; i++)
+    {
+        //newSamples[i] = overlap[i];
+        newSamples[i] = (float)(overlap[i] + samples[i]) / 2.0f;
+    }
+    
+    for (int i = len / 2; i < len; i++)
+    {
+        //newSamples[i] = samples[i - len/2];
+        newSamples[i] = samples[i];
+    }
+}
+
 // Main function for processing microphone data.
 void* record(void* args)
 {
-    // Buffers to store data, window for windowing the data
+    bool firstRun = true;
+    
+    // Buffer to store audio samples
     float samples[WINDOW_SIZE];
+    
+    // Buffer to store samples to be overlapped with the next
+    // buffer of samples
+    float overlap[WINDOW_SIZE/2];
+    
+    // Buffer to store samples with overlap applied
+    float newSamples[WINDOW_SIZE];
+    
     float lowPassedSamples[WINDOW_SIZE];
     float window[WINDOW_SIZE];
     
@@ -706,15 +1015,122 @@ void* record(void* args)
 
     printf("--- Recording... ---\n");
     
-    int     dsSize  = 0;
-    bool    onset   = false;
+    int     dsSize  = 0;        // Size of buffer after downsampling (for HPS)
+    bool    onset   = false;    // Onset flag
 
     // --- Main processing loop ---
+    
+    // Open .wav file to write to
+    tinywav_open_write(&tw,
+                        CHANNELS,
+                        SAMPLE_RATE,
+                        TW_FLOAT32,
+                        TW_INLINE,  
+                        "recording.wav");
+    
+    int numFrames = 0;  // Number of times samples are collected
+                        // (total number of frames processed)
+    
     while (running)
     {
         // Read samples from microphone.
         err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
         checkError(err);
+        
+        // Write samples to a .wav for FFT/other processing afterwards
+        tinywav_write_f(&tw, samples, WINDOW_SIZE);
+        
+        numFrames++;
+    }
+    
+    tinywav_close_write(&tw);
+    
+    printf("\nSample collection stopped.\n");
+
+    err = Pa_StopStream(pStream);
+    checkError(err);
+
+    err = Pa_CloseStream(pStream);
+    checkError(err);
+    
+    printf("Stream closed.\n");
+
+    /*********************************************************
+     * 
+     * PROCESSING THE AUDIO DATA
+     * -------------------------
+     * 
+     * 1.  Read in the .wav file the user just recorded.
+     * 2.  Acquire set of FP samples - overlapping by 50%.
+     *     This reduces data loss from windowing (step 4).
+     * 3.  Low pass the data to help filter out higher 
+     *     frequencies.
+     * 4.  Apply a Hann window to the data. This helps to
+     *     reduce spectral leakage.
+     * 5.  Format the data into complex numbers for the FFT.
+     * 6.  Carry out the FFT to acquire frequency data.
+     * 7.  Downsample and apply harmonic product spectrum for
+     *     a better fundamental frequency estimate.
+     * 8.  Calculate any onsets (from raw FFT output)
+     * 9.  Calculate fundamental pitch from downsampled HPS
+     *     output magnitudes, by looking for the peak, and
+     *     relating the frequency at this peak to a pitch.
+     * 10. Repeat for as long as the recording continues.
+     * 11. Combine to collect pitches and note lengths that
+     *     can then be processed into note on/off signals to
+     *     create the MIDI file, which can then be used by
+     *     the end user.
+     *    
+     ********************************************************/
+     
+    // This gives us the total number of samples in our .wav
+    int totalSamples = numFrames * WINDOW_SIZE;
+     
+    // Duration of the recording is equal to the total number of
+    // samples, divided by the sample rate
+    float timeSecs = (float)totalSamples / (float)SAMPLE_RATE;
+    
+    // Amount of time each frame accounts for
+    float frameTime = timeSecs / numFrames;
+    
+    // Read from .wav file and carry out all processing
+    tinywav_open_read(&tw, "recording.wav", TW_SPLIT);
+
+    // Loop through all of the samples, frame by frame
+    for (int i = 0; i < numFrames; i++)
+    {
+        // Set up pointers to samples, separated by channels
+        // (only one in our case however)
+        float* samplePtrs[CHANNELS];
+        
+        for (int j = 0; j < CHANNELS; ++j)
+        {
+            samplePtrs[j] = samples + j * WINDOW_SIZE;
+        }
+        
+        tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
+        
+        if (firstRun)
+        {
+            // If first run - simply use the first set of samples
+            memcpy(newSamples, samples, sizeof(newSamples));
+            firstRun = false;
+        }
+        else
+        {            
+            /*Overlap the window
+            * ------------------
+            * Use a 50% overlap by taking the latter half of the samples
+            * from the previous window, and averaging it with the first 
+            * half of the new window of samples continuously each FFT cycle
+            * to reduce potential data loss brought about by windowing.
+            */
+            overlapWindow(samples, overlap, newSamples, WINDOW_SIZE);
+        }
+        
+        // Save the second half of the samples to be used in the next FFT
+        // cycle for overlapping
+        saveOverlappedSamples(samples, overlap, WINDOW_SIZE);
         
         /*Low-pass the data
         * -----------------
@@ -724,7 +1140,8 @@ void* record(void* args)
         * For now, limit the range to three octaves from C3-C6, so a frequency
         * range of 130.8 Hz - 1108.73 Hz
         */
-        lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+        lowPassData(newSamples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
         
         /*Apply windowing function (Hann)
         * -------------------------------
@@ -763,17 +1180,8 @@ void* record(void* args)
         hps_getPeak(dsResult, dsSize, onset);
     }
     
-    printf("\nSample collection stopped.\n");
-
-    err = Pa_StopStream(pStream);
-    checkError(err);
-
-    err = Pa_CloseStream(pStream);
-    checkError(err);
+    tinywav_close_read(&tw);
     
-    printf("Stream closed.\n");
-
-    // --------------
     
     // Pa_Terminate() causes a segmentation fault when called on a separate thread...
 
@@ -781,6 +1189,13 @@ void* record(void* args)
     /*err = Pa_Terminate();
     printf("\nStream terminated.\n");
     checkError(err);*/
+    
+    // Outputs everything in the buffer
+    displayBufferContent();
+    printf("\n(Each frame takes %f secs)\n", frameTime);
+    
+    // In progress: output to MIDI file
+    outputMidi(frameTime);
     
     fftwf_free(inp);
     fftwf_free(outp);
@@ -817,6 +1232,8 @@ void activate(GtkApplication* app, gpointer data)
     gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
+    
+    setMidiNotes();
     
     recBtn = gtk_button_new_with_label("Record");
 
