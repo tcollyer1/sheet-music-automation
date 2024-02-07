@@ -6,7 +6,7 @@
 #include "../include/main.h"
 #include "../include/onsetsds.h"
 #include "../include/tinywav.h"
-#include "../include/midifile.h"
+//#include "../include/midifile.h"
 
 #define REAL 0
 #define IMAG 1
@@ -32,19 +32,35 @@
                                     
 #define NUM_HARMONICS       5       // Number of harmonics for the harmonic product spectrum
                                     // to consider
+                                    
+#define OCTAVE_SIZE         12      // Number of pitches in an octave.
 
-
+//////////////////////////////////////////////////////////////////////////////
+// Global flags for thread management
 static int      running     = 0;
 static int      processing  = 0;
 static int      firstRun    = 0;
 
-GtkWidget*      recBtn      = NULL;
+//////////////////////////////////////////////////////////////////////////////
+// Global GTK widgets for manipulation from different functions
+GtkWidget*      recBtn      = NULL; // Record button
+GtkWidget*      tempo       = NULL; // Tempo entry text field
+GtkWidget*      key         = NULL; // Key signature selection
+GtkWidget*      msgLbl      = NULL; // Message to display error info to user
 
+int             tempoVal    = 0;
+tMIDI_KEYSIG    keySigVal   = keyCMaj;
+
+//////////////////////////////////////////////////////////////////////////////
+// Processing thread (to not freeze main GUI thread)
 pthread_t       procTask;
 
+//////////////////////////////////////////////////////////////////////////////
+// Mutexes
 pthread_mutex_t runLock;
 pthread_mutex_t procLock;
 
+//////////////////////////////////////////////////////////////////////////////
 // Buffers to store the output data to be translated into MIDI notes
 char        recPitches[MAX_NOTES][4];
 int         recLengths[MAX_NOTES];
@@ -52,14 +68,17 @@ int         recMidiPitches[MAX_NOTES];
 static int  totalLen = 0;
 static int  bufIndex = 0;
 
+//////////////////////////////////////////////////////////////////////////////
 // OnsetsDS struct - onset detection
 OnsetsDS ods;
 
+//////////////////////////////////////////////////////////////////////////////
 // For reading from/writing to .wav to save user recording for 
 // analysis
 TinyWav tw;
 
-// For now, manually establish notes and corresponding
+//////////////////////////////////////////////////////////////////////////////
+// Establish notes and corresponding
 // frequencies
 char* notes[37] = 
 { 
@@ -69,9 +88,47 @@ char* notes[37] =
     "C6"
 };
 
+//////////////////////////////////////////////////////////////////////////////
+// Array of key signature names. OCTAVE_SIZE * 2 as there is a major key
+// for each pitch, but also a minor key.
+const char* keys[OCTAVE_SIZE * 2] 
+        = {     
+            "C major", "C minor",
+            "Db major", "C# minor",
+            "D major", "D minor",
+            "Eb major", "Eb minor",
+            "E major", "E minor",
+            "F major", "F minor",
+            "Gb major", "F# minor",
+            "G major", "G minor",
+            "Ab major", "Ab minor",
+            "A major", "A minor",
+            "Bb major", "Bb minor",
+            "B major", "B minor"
+        };
+                
+const tMIDI_KEYSIG midiKeys[OCTAVE_SIZE * 2]
+        = { 
+            keyCMaj, keyCMin,
+            keyDFlatMaj, keyCSharpMin,
+            keyDMaj, keyDMin,
+            keyEFlatMaj, keyEFlatMin,
+            keyEMaj, keyEMin,
+            keyFMaj, keyFMin,
+            keyGFlatMaj, keyFSharpMin,
+            keyGMaj, keyGMin,
+            keyAFlatMaj, keyAFlatMin,
+            keyAMaj, keyAMin,
+            keyBFlatMaj, keyBFlatMin,
+            keyBMaj, keyBMin
+        };
+
+//////////////////////////////////////////////////////////////////////////////
 // Will store all of the corresponding MIDI pitch values per note
 int midiNotes[37];
 
+//////////////////////////////////////////////////////////////////////////////
+// List of corresponding frequencies per pitch C3-C6.
 // Add C#6 purely for upper bound checking in case the note detected is a C6
 float frequencies[38] = 
 {
@@ -116,26 +173,46 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     
     else
     {
-        firstRun = 1;
+        tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(tempo));
         
-        printf("\n*** Starting recording thread... ***\n");
-        
-        pthread_mutex_lock(&runLock);
-        running = 1;
-        pthread_mutex_unlock(&runLock);
-        
-        pthread_mutex_lock(&procLock);
-        processing = 1;
-        pthread_mutex_unlock(&procLock);
-    
-        threadResult2 = pthread_create(&procTask, NULL, record, NULL);
-        
-        if (threadResult2 != 0)
+        char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(key));
+                
+        // Only start recording if valid values (only checking tempo/key so far)
+        if (tempoVal && tempKeyVal != NULL)
         {
-            g_error("\nERROR: Failed to start thread\n");
-        }
+            gtk_label_set_text(GTK_LABEL(msgLbl), "");
+            
+            keySigVal = getMIDIKey(tempKeyVal);
+            
+            firstRun = 1;
         
-        gtk_button_set_label(GTK_BUTTON(recBtn), "Stop");
+            printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+            g_free(tempKeyVal);
+            
+            printf("\n*** Starting recording thread... ***\n");
+            
+            pthread_mutex_lock(&runLock);
+            running = 1;
+            pthread_mutex_unlock(&runLock);
+            
+            pthread_mutex_lock(&procLock);
+            processing = 1;
+            pthread_mutex_unlock(&procLock);
+        
+            threadResult2 = pthread_create(&procTask, NULL, record, NULL);
+            
+            if (threadResult2 != 0)
+            {
+                g_error("\nERROR: Failed to start thread\n");
+            }
+            
+            gtk_button_set_label(GTK_BUTTON(recBtn), "Stop");
+        }
+        else
+        {
+            // Else display a message
+            gtk_label_set_text(GTK_LABEL(msgLbl), "Please correct missing/invalid values");
+        }
     }
 }
 
@@ -277,12 +354,29 @@ int getNoteType(float noteDur, float qNoteLen)
     return (noteType);
 }
 
+tMIDI_KEYSIG getMIDIKey(const char* keySig)
+{
+    int idx = 0;
+    tMIDI_KEYSIG midiKey = keyCMaj;
+    
+    for (int i = 0; i < OCTAVE_SIZE * 2; i++)
+    {
+        if (strcmp(keySig, keys[i]) == 0)
+        {
+            printf("[!] MIDI key found --> %s (index %d)", keys[i], i);
+            idx = i;
+            break;
+        }
+    }
+    
+    midiKey = midiKeys[idx];
+    
+    return (midiKey);
+}
+
 // Write the contents of the buffers to a MIDI file.
 void outputMidi(float frameTime)
-{    
-    // For now, set tempo here
-    int tempo = 120;
-    
+{        
     int track = 1;
     
     // Try to create MIDI file
@@ -293,10 +387,11 @@ void outputMidi(float frameTime)
         // Assign tempo of 60bpm for now.
         // Starts at track 1. May need to start it from
         // track 0 instead
-        midiSongAddTempo(midiOutput, track, tempo);
+        midiSongAddTempo(midiOutput, track, tempoVal);
         
         // Set key to C major for now.
-        midiSongAddKeySig(midiOutput, track, keyCMaj);
+        midiSongAddKeySig(midiOutput, track, keySigVal);
+        //midiSongAddKeySig(midiOutput, track, keyCMaj);
         
         // Set current channel before writing data (only using one)
         midiFileSetTracksDefaultChannel(midiOutput, track, MIDI_CHANNEL_1);
@@ -306,19 +401,10 @@ void outputMidi(float frameTime)
         
         // Simple 4/4 time for now
         midiSongAddSimpleTimeSig(midiOutput, track, 4, MIDI_NOTE_CROCHET);
-        
-        // TEST
-        /*midiTrackAddNote(midiOutput, track, 48, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
-        midiTrackAddNote(midiOutput, track, 50, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
-        midiTrackAddRest(midiOutput, track, MIDI_NOTE_QUAVER, FALSE);
-        midiTrackAddNote(midiOutput, track, 52, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
-        midiTrackAddNote(midiOutput, track, 53, MIDI_NOTE_QUAVER, MIDI_VOL_HALF, TRUE, FALSE);
-        midiTrackAddNote(midiOutput, track, 55, MIDI_NOTE_CROCHET, MIDI_VOL_HALF, TRUE, FALSE);
-        */
     
         // Get the length of time one beat (crotchet) will account for given
         // the tempo
-        float beatsPerSec = (float)tempo / 60;
+        float beatsPerSec = (float)tempoVal / 60;
         
         // Fastest note to detect is quavers, FOR NOW.
         float minimumNoteDur = beatsPerSec / 2;
@@ -342,7 +428,7 @@ void outputMidi(float frameTime)
             // If not silence
             if (strcmp(recPitches[i], "N/A") != 0)
             {
-                printf("\n====\nWriting %s (MIDI PITCH %d, (float)round((%f * %d) / %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, noteLen);
+                printf("\n====\nWriting %s (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, beatsPerSec, noteLen);
                 
                 midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
             }
@@ -1147,6 +1233,7 @@ void* record(void* args)
     // Read from .wav file and carry out all processing
     tinywav_open_read(&tw, "recording.wav", TW_SPLIT);
 
+    printf("\n*** Starting sample analysis ***\n");
     // Loop through all of the samples, frame by frame
     for (int i = 0; i < numFrames; i++)
     {
@@ -1268,6 +1355,7 @@ void* record(void* args)
         hps_getPeak(dsResult, dsSize, onset);
     }
     
+    printf("\n*** Closing .wav file ***\n");
     tinywav_close_read(&tw);
     
     
@@ -1299,20 +1387,32 @@ void* record(void* args)
 void activate(GtkApplication* app, gpointer data)
 {
     GtkWidget* pWindow          = gtk_application_window_new(app);
+                    
+    key = gtk_combo_box_text_new();
+    
+    for (int i = 0; i < OCTAVE_SIZE * 2; i++)
+    {
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(key), NULL, keys[i]);
+    }
 
     // Text boxes & labels
     GtkWidget* time             = gtk_entry_new();
-    GtkWidget* tempo            = gtk_entry_new();
-    GtkWidget* key              = gtk_entry_new();
+    
+    tempo                       = gtk_spin_button_new_with_range(10, 200, 1);
+
+    
+    //GtkWidget* key              = gtk_entry_new();
+    
     GtkWidget* fileLoc          = gtk_entry_new();
 
     GtkWidget* timeLbl          = gtk_label_new("Time signature (N/N): ");
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
     GtkWidget* fileLocLbl       = gtk_label_new("File location: ");
+    
+    msgLbl                      = gtk_label_new("");
 
     gtk_entry_set_max_length(GTK_ENTRY(time), 0);
-    gtk_entry_set_max_length(GTK_ENTRY(tempo), 0);
     gtk_entry_set_max_length(GTK_ENTRY(key), 0);
     gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
 
@@ -1360,6 +1460,8 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 3, 4, 1, 1);
 
     gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
+    
+    gtk_grid_attach(GTK_GRID(pGrid), msgLbl, 2, 6, 1, 1);
 
     // Connect click events to callback functions
     g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), NULL);

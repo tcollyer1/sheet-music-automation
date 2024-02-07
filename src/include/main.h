@@ -6,6 +6,7 @@
 #include <portaudio.h>
 #include <gtk/gtk.h>
 #include <fftw3.h>
+#include "midifile.h"
 
 // PortAudio & GTK funcs
 void 	checkError(PaError err);
@@ -35,6 +36,7 @@ void 	hps_getPeak(float* dsResult, int len, bool isOnset);
 float   interpolate(float first, float last);
 
 char* 	getPitch(float freq, int* midiNote);
+tMIDI_KEYSIG getMIDIKey(const char* keySig);
 
 // Adding to output buffers
 void 	pitchesAdd(char* pitch, int length, int midiNote);
