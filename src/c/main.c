@@ -40,9 +40,13 @@ static int      running     = 0;
 static int      processing  = 0;
 static int      firstRun    = 0;
 
+bool newRecording = false;
+bool isUpload = false;
+
 //////////////////////////////////////////////////////////////////////////////
 // Global GTK widgets/general data for manipulation from different functions
 GtkWidget*      recBtn      = NULL; // Record button
+GtkWidget*      uploadBtn   = NULL; // Upload file button
 
 // Struct for storing user's inputted data
 typedef struct
@@ -53,6 +57,7 @@ typedef struct
     GtkWidget*      key;
     GtkWidget*      msgLbl;
     GtkWidget*      fileOutput;
+    GtkWidget*      fileUpload;
 } FIELD_DATA;
 
 int             tempoVal    = 0;
@@ -64,6 +69,8 @@ int             noteDenom   = 0;
 
 char            fileOutputLoc[500];
 char            wavOutputLoc[500];
+
+char            wavUploadLoc[500];
 
 //////////////////////////////////////////////////////////////////////////////
 // Processing thread (to not freeze main GUI thread)
@@ -165,6 +172,8 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     
     if (running)
     {
+        newRecording = false;
+        
         printf("\n*** Stopping recording thread... ***\n");
         
         pthread_mutex_lock(&runLock);
@@ -207,6 +216,9 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         // Only start recording if valid values
         if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL)
         {
+            newRecording = true;
+            isUpload = false;
+            
             // Clear warning text - all values needed are present
             gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
             
@@ -249,6 +261,83 @@ void toggleRecording(GtkWidget* widget, gpointer data)
             // Else display a message
             gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please correct missing/invalid values");
         }
+    }
+}
+
+void processUpload(GtkWidget* widget, gpointer data)
+{
+    int threadResult = 0;
+    int threadResult2 = 0;
+    
+    // Take a copy of the input data fed in for reading here
+    FIELD_DATA* d = (FIELD_DATA*)data;    
+    
+    gint pickResult = gtk_dialog_run(GTK_DIALOG(d->fileUpload));
+    
+    GtkFileChooser* chooser1 = GTK_FILE_CHOOSER(d->fileUpload);
+    char* tempUploadLoc = gtk_file_chooser_get_filename(chooser1);
+        
+    // Get file output location
+    GtkFileChooser* chooser2 = GTK_FILE_CHOOSER(d->fileOutput);
+    char* tempLoc = gtk_file_chooser_get_filename(chooser2);
+        
+    // Get tempo
+    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
+        
+    // Get time signature
+    beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
+    char* tempTimeSigDenomVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->timeDenom));
+    
+    // Get key signature
+    char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
+            
+    // Only start recording if valid values
+    if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL)
+    {
+        gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
+        
+        // NOT a recording
+        newRecording = false;
+        isUpload = true;
+        
+        // Set destination file locations
+        strcpy(fileOutputLoc, tempLoc);
+        strcpy(wavOutputLoc, tempLoc);
+        strcat(fileOutputLoc, ".mid");
+        strcat(wavOutputLoc, ".wav");
+        
+        strcpy(wavUploadLoc, tempUploadLoc);
+        
+        keySigVal = getMIDIKey(tempKeyVal);
+        noteDenom = getTimeSigDenom(tempTimeSigDenomVal);
+        
+        firstRun = 1;
+    
+        printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+        g_free(tempKeyVal);
+        g_free(tempTimeSigDenomVal);
+        
+        printf("\n*** Starting recording thread... ***\n");
+        
+        pthread_mutex_lock(&runLock);
+        running = 1;
+        pthread_mutex_unlock(&runLock);
+        
+        pthread_mutex_lock(&procLock);
+        processing = 1;
+        pthread_mutex_unlock(&procLock);
+    
+        threadResult2 = pthread_create(&procTask, NULL, record, NULL);
+        
+        if (threadResult2 != 0)
+        {
+            g_error("\nERROR: Failed to start thread\n");
+        }
+    }
+    else
+    {
+        // Else display a message
+        gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please correct missing/invalid values");
     }
 }
 
@@ -1139,118 +1228,128 @@ void* record(void* args)
     float* odsData = (float*)malloc(onsetsds_memneeded(ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN));
     onsetsds_init(&ods, odsData, ODS_FFT_FFTW3_HC, ODS_ODF_RCOMPLEX, WINDOW_SIZE, MEDIAN_SPAN, SAMPLE_RATE);
     
-
-    // Initialise PortAudio stream
-    PaError err = Pa_Initialize();
-    checkError(err);
-
-    // List all audio I/O devices found
-    int numDevices = Pa_GetDeviceCount();
-    printf("Number of devices: %d\n", numDevices);
-
-    if (numDevices < 0)
-    {
-        printf("Error getting the device count\n");
-        exit(-1);
-    }
-    else if (numDevices == 0)
-    {
-        printf("No available audio devices detected!\n");
-        exit(-1);
-    }
-
-    // Devices found - display info
-    const PaDeviceInfo* pDeviceInfo;
-    for (int i = 0; i < numDevices; i++)
-    {
-        pDeviceInfo = Pa_GetDeviceInfo(i);
-
-        printf("-- DEVICE %d: --\n\tName: %s\n\tMax input channels: %d\n\tMax output channels: %d\n\tDefault sample rate: %f\n",
-            i,
-            pDeviceInfo->name,
-            pDeviceInfo->maxInputChannels,
-            pDeviceInfo->maxOutputChannels,
-            pDeviceInfo->defaultSampleRate);
-    }
-
-    PaStreamParameters inputParams;
-
-    // Use default input device
-    int inpDevice = Pa_GetDefaultInputDevice();
-    
-    if (inpDevice == paNoDevice)
-    {
-        printf("No default input device.\n");
-        exit(-1);
-    }
-
-    // Configure input params for PortAudio stream
-    configureInParams(inpDevice, &inputParams);
-    
     // Prepare window
     setUpHannWindow(window, WINDOW_SIZE);
-
-    // Open PortAudio stream
-    printf("Opening stream\n");
-    PaStream* pStream;
-    err = Pa_OpenStream
-    (
-        &pStream,
-        &inputParams,
-        NULL, // Output parameters - not outputting data, so set to null
-        SAMPLE_RATE,
-        WINDOW_SIZE,
-        paClipOff, // Not outputting out of range samples, don't clip?
-        NULL, // No callback function, so null
-        NULL // No user data here, is processed instead below, so null
-    );
-    checkError(err);
-
-    printf("Starting stream\n");
-    err = Pa_StartStream(pStream);
-    checkError(err);
-
-    printf("--- Recording... ---\n");
     
-    int     dsSize  = 0;        // Size of buffer after downsampling (for HPS)
-    bool    onset   = false;    // Onset flag
-
-    // --- Main processing loop ---
-    
-    // Open .wav file to write to
-    tinywav_open_write(&tw,
-                        CHANNELS,
-                        SAMPLE_RATE,
-                        TW_FLOAT32,
-                        TW_INLINE,  
-                        wavOutputLoc);
+    // This will give us the total number of samples in our .wav
+    int totalSamples = 0;
     
     int numFrames = 0;  // Number of times samples are collected
                         // (total number of frames processed)
+                        
+    int     dsSize  = 0;        // Size of buffer after downsampling (for HPS)
+    bool    onset   = false;    // Onset flag
     
-    while (running)
+    // If we're RECORDING, open a PortAudio stream to capture user audio data
+    if (!isUpload && newRecording)
     {
-        // Read samples from microphone.
-        err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
+        // Initialise PortAudio stream
+        PaError err = Pa_Initialize();
+        checkError(err);
+
+        // List all audio I/O devices found
+        int numDevices = Pa_GetDeviceCount();
+        printf("Number of devices: %d\n", numDevices);
+
+        if (numDevices < 0)
+        {
+            printf("Error getting the device count\n");
+            exit(-1);
+        }
+        else if (numDevices == 0)
+        {
+            printf("No available audio devices detected!\n");
+            exit(-1);
+        }
+
+        // Devices found - display info
+        const PaDeviceInfo* pDeviceInfo;
+        for (int i = 0; i < numDevices; i++)
+        {
+            pDeviceInfo = Pa_GetDeviceInfo(i);
+
+            printf("-- DEVICE %d: --\n\tName: %s\n\tMax input channels: %d\n\tMax output channels: %d\n\tDefault sample rate: %f\n",
+                i,
+                pDeviceInfo->name,
+                pDeviceInfo->maxInputChannels,
+                pDeviceInfo->maxOutputChannels,
+                pDeviceInfo->defaultSampleRate);
+        }
+
+        PaStreamParameters inputParams;
+
+        // Use default input device
+        int inpDevice = Pa_GetDefaultInputDevice();
+        
+        if (inpDevice == paNoDevice)
+        {
+            printf("No default input device.\n");
+            exit(-1);
+        }
+
+        // Configure input params for PortAudio stream
+        configureInParams(inpDevice, &inputParams);
+        
+        // Open PortAudio stream
+        printf("Opening stream\n");
+        PaStream* pStream;
+        err = Pa_OpenStream
+        (
+            &pStream,
+            &inputParams,
+            NULL, // Output parameters - not outputting data, so set to null
+            SAMPLE_RATE,
+            WINDOW_SIZE,
+            paClipOff, // Not outputting out of range samples, don't clip?
+            NULL, // No callback function, so null
+            NULL // No user data here, is processed instead below, so null
+        );
+        checkError(err);
+
+        printf("Starting stream\n");
+        err = Pa_StartStream(pStream);
+        checkError(err);
+
+        printf("--- Recording... ---\n");
+
+        // --- Main recording loop ---
+        
+        // Open .wav file to write to
+        tinywav_open_write(&tw,
+                            CHANNELS,
+                            SAMPLE_RATE,
+                            TW_FLOAT32,
+                            TW_INLINE,  
+                            wavOutputLoc);
+        
+        while (running)
+        {
+            // Read samples from microphone.
+            err = Pa_ReadStream(pStream, samples, WINDOW_SIZE);
+            checkError(err);
+            
+            // Write samples to a .wav for FFT/other processing afterwards
+            tinywav_write_f(&tw, samples, WINDOW_SIZE);
+            
+            numFrames++;
+        }
+        
+        tinywav_close_write(&tw);
+        
+        printf("\nSample collection stopped.\n");
+
+        err = Pa_StopStream(pStream);
+        checkError(err);
+
+        err = Pa_CloseStream(pStream);
         checkError(err);
         
-        // Write samples to a .wav for FFT/other processing afterwards
-        tinywav_write_f(&tw, samples, WINDOW_SIZE);
+        pStream = NULL;
         
-        numFrames++;
+        printf("Stream closed.\n");
     }
-    
-    tinywav_close_write(&tw);
-    
-    printf("\nSample collection stopped.\n");
 
-    err = Pa_StopStream(pStream);
-    checkError(err);
-
-    err = Pa_CloseStream(pStream);
-    checkError(err);
     
-    printf("Stream closed.\n");
 
     /*********************************************************
      * 
@@ -1279,21 +1378,32 @@ void* record(void* args)
      *     the end user.
      *    
      ********************************************************/
-     
-    // This gives us the total number of samples in our .wav
-    int totalSamples = numFrames * WINDOW_SIZE;
-     
+    
+    if (isUpload && !newRecording)
+    {
+        printf("\n||| This is an UPLOAD |||\n");
+        tinywav_open_read(&tw, wavUploadLoc, TW_SPLIT);
+        
+        // TODO: This is NOT the correct number of frames.
+        numFrames = tw.h.BitsPerSample;
+    }
+    else
+    {
+        printf("\n||| This is a RECORDING |||\n");
+        // Read from .wav file and carry out all processing
+        tinywav_open_read(&tw, wavOutputLoc, TW_SPLIT);
+    }
+    
+    totalSamples = numFrames * WINDOW_SIZE;
+    
     // Duration of the recording is equal to the total number of
     // samples, divided by the sample rate
     float timeSecs = (float)totalSamples / (float)SAMPLE_RATE;
     
     // Amount of time each frame accounts for
     float frameTime = timeSecs / numFrames;
-    
-    // Read from .wav file and carry out all processing
-    tinywav_open_read(&tw, wavOutputLoc, TW_SPLIT);
 
-    printf("\n*** Starting sample analysis ***\n");
+    printf("\n*** Starting sample analysis (num frames = %d) ***\n", numFrames);
     // Loop through all of the samples, frame by frame
     for (int i = 0; i < numFrames; i++)
     {
@@ -1430,12 +1540,11 @@ void* record(void* args)
     displayBufferContent();
     printf("\n(Each frame takes %f secs)\n", frameTime);
     
-    // In progress: output to MIDI file
+    // Output to MIDI file
     outputMidi(frameTime);
     
     fftwf_free(inp);
     fftwf_free(outp);
-    pStream = NULL;
     
     printf("\nMemory freed.\n");
     
@@ -1450,6 +1559,9 @@ void activate(GtkApplication* app, gpointer data)
     
     // Struct to hold user input data
     static FIELD_DATA inputData;
+    
+    // File upload point - instead of recording
+    inputData.fileUpload = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
     
     // Set up the list of key signature selection
     inputData.key = gtk_combo_box_text_new();
@@ -1491,11 +1603,13 @@ void activate(GtkApplication* app, gpointer data)
     gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(inputData.msgLbl), 1.0);
     
     // Set up the MIDI notes to correspond with list of pitches
     setMidiNotes();
     
     recBtn = gtk_button_new_with_label("Record");
+    uploadBtn = gtk_button_new_with_label("Upload .wav");
 
     // Create containing box & grid for layout
     GtkWidget* pBox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -1533,13 +1647,16 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
     //gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 2, 4, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 4, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 3, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), uploadBtn, 3, 5, 1, 1);
     
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 3, 6, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 2, 6, 1, 1);
 
     // Connect click events to callback functions
     g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), &inputData);
+    g_signal_connect(uploadBtn, "clicked", G_CALLBACK(processUpload), &inputData);
 
     // Make the X button close the window correctly & end program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
