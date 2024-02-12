@@ -6,7 +6,6 @@
 #include "../include/main.h"
 #include "../include/onsetsds.h"
 #include "../include/tinywav.h"
-//#include "../include/midifile.h"
 
 #define REAL 0
 #define IMAG 1
@@ -42,14 +41,29 @@ static int      processing  = 0;
 static int      firstRun    = 0;
 
 //////////////////////////////////////////////////////////////////////////////
-// Global GTK widgets for manipulation from different functions
+// Global GTK widgets/general data for manipulation from different functions
 GtkWidget*      recBtn      = NULL; // Record button
-GtkWidget*      tempo       = NULL; // Tempo entry text field
-GtkWidget*      key         = NULL; // Key signature selection
-GtkWidget*      msgLbl      = NULL; // Message to display error info to user
+
+// Struct for storing user's inputted data
+typedef struct
+{
+    GtkWidget*      tempo;
+    GtkWidget*      time;
+    GtkWidget*      timeDenom;
+    GtkWidget*      key;
+    GtkWidget*      msgLbl;
+    GtkWidget*      fileOutput;
+} FIELD_DATA;
 
 int             tempoVal    = 0;
+
 tMIDI_KEYSIG    keySigVal   = keyCMaj;
+
+int             beatsPerBar = 0;
+int             noteDenom   = 0;
+
+char            fileOutputLoc[500];
+char            wavOutputLoc[500];
 
 //////////////////////////////////////////////////////////////////////////////
 // Processing thread (to not freeze main GUI thread)
@@ -109,18 +123,19 @@ const char* keys[OCTAVE_SIZE * 2]
                 
 const tMIDI_KEYSIG midiKeys[OCTAVE_SIZE * 2]
         = { 
-            keyCMaj, keyCMin,
-            keyDFlatMaj, keyCSharpMin,
-            keyDMaj, keyDMin,
-            keyEFlatMaj, keyEFlatMin,
-            keyEMaj, keyEMin,
-            keyFMaj, keyFMin,
-            keyGFlatMaj, keyFSharpMin,
-            keyGMaj, keyGMin,
-            keyAFlatMaj, keyAFlatMin,
-            keyAMaj, keyAMin,
-            keyBFlatMaj, keyBFlatMin,
-            keyBMaj, keyBMin
+            // Major        // Minor
+            keyCMaj,        keyCMin,
+            keyDFlatMaj,    keyCSharpMin,
+            keyDMaj,        keyDMin,
+            keyEFlatMaj,    keyEFlatMin,
+            keyEMaj,        keyEMin,
+            keyFMaj,        keyFMin,
+            keyGFlatMaj,    keyFSharpMin,
+            keyGMaj,        keyGMin,
+            keyAFlatMaj,    keyAFlatMin,
+            keyAMaj,        keyAMin,
+            keyBFlatMaj,    keyBFlatMin,
+            keyBMaj,        keyBMin
         };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -145,6 +160,8 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     int threadResult = 0;
     int threadResult2 = 0;
     
+    // Take a copy of the input data fed in for reading here
+    FIELD_DATA* d = (FIELD_DATA*)data;    
     
     if (running)
     {
@@ -173,21 +190,40 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     
     else
     {
-        tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(tempo));
+        // Get file output location
+        GtkFileChooser* chooser = GTK_FILE_CHOOSER(d->fileOutput);
+        char* tempLoc = gtk_file_chooser_get_filename(chooser);
         
-        char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(key));
+        // Get tempo
+        tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
+        
+        // Get time signature
+        beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
+        char* tempTimeSigDenomVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->timeDenom));
+        
+        // Get key signature
+        char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
                 
-        // Only start recording if valid values (only checking tempo/key so far)
-        if (tempoVal && tempKeyVal != NULL)
+        // Only start recording if valid values
+        if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL)
         {
-            gtk_label_set_text(GTK_LABEL(msgLbl), "");
+            // Clear warning text - all values needed are present
+            gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
+            
+            // Set destination file locations
+            strcpy(fileOutputLoc, tempLoc);
+            strcpy(wavOutputLoc, tempLoc);
+            strcat(fileOutputLoc, ".mid");
+            strcat(wavOutputLoc, ".wav");
             
             keySigVal = getMIDIKey(tempKeyVal);
+            noteDenom = getTimeSigDenom(tempTimeSigDenomVal);
             
             firstRun = 1;
         
             printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
             g_free(tempKeyVal);
+            g_free(tempTimeSigDenomVal);
             
             printf("\n*** Starting recording thread... ***\n");
             
@@ -211,7 +247,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         else
         {
             // Else display a message
-            gtk_label_set_text(GTK_LABEL(msgLbl), "Please correct missing/invalid values");
+            gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please correct missing/invalid values");
         }
     }
 }
@@ -274,6 +310,28 @@ void setMidiNotes()
     }
     
     printf("\n===            ===\n");
+}
+
+// Returns the MIDI_NOTE equivalent based on the selected time signature
+// denominator for use in setting the output MIDI file time signature.
+int getTimeSigDenom(const char* selected)
+{
+    int denom = 0;
+    
+    if (strcmp(selected, "Crotchets") == 0)
+    {
+        denom = MIDI_NOTE_CROCHET;
+    }
+    else if (strcmp(selected, "Minims") == 0)
+    {
+        denom = MIDI_NOTE_MINIM;
+    }
+    else if (strcmp(selected, "Quavers") == 0)
+    {
+        denom = MIDI_NOTE_QUAVER;
+    }
+    
+    return (denom);
 }
 
 // Get the note type for a given note duration.
@@ -380,7 +438,7 @@ void outputMidi(float frameTime)
     int track = 1;
     
     // Try to create MIDI file
-    MIDI_FILE* midiOutput = midiFileCreate("output.mid", TRUE); // (True for overwrite file if exists)
+    MIDI_FILE* midiOutput = midiFileCreate(fileOutputLoc, TRUE); // (True for overwrite file if exists)
     
     if (midiOutput)
     {
@@ -389,9 +447,11 @@ void outputMidi(float frameTime)
         // track 0 instead
         midiSongAddTempo(midiOutput, track, tempoVal);
         
-        // Set key to C major for now.
-        midiSongAddKeySig(midiOutput, track, keySigVal);
-        //midiSongAddKeySig(midiOutput, track, keyCMaj);
+        // Set key signature.
+        // TODO: currently there is an issue where any minor key 
+        // inputted is transcribed as its major counterpart, even
+        // directly specifying the desired tMIDI_KEYSIG here...
+        midiSongAddKeySig(midiOutput, track, (tMIDI_KEYSIG)keySigVal);
         
         // Set current channel before writing data (only using one)
         midiFileSetTracksDefaultChannel(midiOutput, track, MIDI_CHANNEL_1);
@@ -400,7 +460,7 @@ void outputMidi(float frameTime)
         midiTrackAddProgramChange(midiOutput, track, MIDI_PATCH_ELECTRIC_GRAND_PIANO);
         
         // Simple 4/4 time for now
-        midiSongAddSimpleTimeSig(midiOutput, track, 4, MIDI_NOTE_CROCHET);
+        midiSongAddSimpleTimeSig(midiOutput, track, beatsPerBar, noteDenom);
     
         // Get the length of time one beat (crotchet) will account for given
         // the tempo
@@ -1163,7 +1223,7 @@ void* record(void* args)
                         SAMPLE_RATE,
                         TW_FLOAT32,
                         TW_INLINE,  
-                        "recording.wav");
+                        wavOutputLoc);
     
     int numFrames = 0;  // Number of times samples are collected
                         // (total number of frames processed)
@@ -1231,7 +1291,7 @@ void* record(void* args)
     float frameTime = timeSecs / numFrames;
     
     // Read from .wav file and carry out all processing
-    tinywav_open_read(&tw, "recording.wav", TW_SPLIT);
+    tinywav_open_read(&tw, wavOutputLoc, TW_SPLIT);
 
     printf("\n*** Starting sample analysis ***\n");
     // Loop through all of the samples, frame by frame
@@ -1387,40 +1447,52 @@ void* record(void* args)
 void activate(GtkApplication* app, gpointer data)
 {
     GtkWidget* pWindow          = gtk_application_window_new(app);
-                    
-    key = gtk_combo_box_text_new();
     
+    // Struct to hold user input data
+    static FIELD_DATA inputData;
+    
+    // Set up the list of key signature selection
+    inputData.key = gtk_combo_box_text_new();
     for (int i = 0; i < OCTAVE_SIZE * 2; i++)
     {
-        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(key), NULL, keys[i]);
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.key), NULL, keys[i]);
     }
-
-    // Text boxes & labels
-    GtkWidget* time             = gtk_entry_new();
     
-    tempo                       = gtk_spin_button_new_with_range(10, 200, 1);
+    // Set up time signature (denominator) selection combo box
+    inputData.timeDenom = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Quavers");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Crotchets");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Minims");
 
+    // Time signature & tempo entry fields
+    inputData.time      = gtk_spin_button_new_with_range(2, 16, 1);
+    inputData.tempo     = gtk_spin_button_new_with_range(10, 200, 1);
     
-    //GtkWidget* key              = gtk_entry_new();
-    
-    GtkWidget* fileLoc          = gtk_entry_new();
+    // File output location
+    //GtkWidget* fileLoc          = gtk_entry_new();
+    inputData.fileOutput = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_SAVE);
 
-    GtkWidget* timeLbl          = gtk_label_new("Time signature (N/N): ");
+    // Labels
+    GtkWidget* timeLbl          = gtk_label_new("Time signature (beats/bar): ");
+    GtkWidget* timeDenomLbl     = gtk_label_new("Time signature (denominator): ");
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
-    GtkWidget* fileLocLbl       = gtk_label_new("File location: ");
+    GtkWidget* fileLocLbl       = gtk_label_new("File output location: ");
     
-    msgLbl                      = gtk_label_new("");
+    // Label that will display any warnings to the user
+    inputData.msgLbl            = gtk_label_new("");
 
-    gtk_entry_set_max_length(GTK_ENTRY(time), 0);
-    gtk_entry_set_max_length(GTK_ENTRY(key), 0);
-    gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
+    //gtk_entry_set_max_length(GTK_ENTRY(inputData.time), 0);
+    //gtk_entry_set_max_length(GTK_ENTRY(inputData.key), 0);
+    //gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
 
     gtk_label_set_xalign(GTK_LABEL(timeLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(timeDenomLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
     
+    // Set up the MIDI notes to correspond with list of pitches
     setMidiNotes();
     
     recBtn = gtk_button_new_with_label("Record");
@@ -1440,7 +1512,7 @@ void activate(GtkApplication* app, gpointer data)
 
     gtk_grid_set_column_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
-    gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), TRUE); // Expands to full width of window
+    gtk_grid_set_column_homogeneous(GTK_GRID(pGrid), FALSE); // Expands to full width of window
 
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
 
@@ -1450,21 +1522,24 @@ void activate(GtkApplication* app, gpointer data)
 
     // Attach textboxes, labels and button to grid
     gtk_grid_attach(GTK_GRID(pGrid), timeLbl, 1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), timeDenomLbl, 4, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), tempoLbl, 1, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), keyLbl, 1, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 4, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(pGrid), time, 3, 1, 1, 1);    
-    gtk_grid_attach(GTK_GRID(pGrid), tempo, 3, 2, 1, 1);    
-    gtk_grid_attach(GTK_GRID(pGrid), key, 3, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 3, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.time, 2, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.timeDenom, 5, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.tempo, 2, 2, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
+    //gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 2, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 4, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 3, 5, 1, 1);
     
-    gtk_grid_attach(GTK_GRID(pGrid), msgLbl, 2, 6, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 3, 6, 1, 1);
 
     // Connect click events to callback functions
-    g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), NULL);
+    g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), &inputData);
 
     // Make the X button close the window correctly & end program
     g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
