@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <math.h>       // M_PI, sqrt, sin, cos
 #include <pthread.h>
+#include <sys/stat.h>
 
 #include "../include/main.h"
 #include "../include/onsetsds.h"
@@ -192,9 +193,6 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         }*/
         
         gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
-        
-        totalLen = 0;
-        bufIndex = 0;
     }
     
     else
@@ -264,6 +262,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
     }
 }
 
+// Handles clicking the upload button - parsing a pre-recorded .wav file
 void processUpload(GtkWidget* widget, gpointer data)
 {
     int threadResult = 0;
@@ -291,7 +290,7 @@ void processUpload(GtkWidget* widget, gpointer data)
     // Get key signature
     char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
             
-    // Only start recording if valid values
+    // Only start processing if valid values
     if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
@@ -1382,15 +1381,24 @@ void* record(void* args)
     if (isUpload && !newRecording)
     {
         printf("\n||| This is an UPLOAD |||\n");
+        
+        // Get size of the file in bytes for calculating the total number
+        // of frames
+        struct stat st;
+        stat(wavUploadLoc, &st);
+        int size = st.st_size;
+        
         tinywav_open_read(&tw, wavUploadLoc, TW_SPLIT);
         
-        // TODO: This is NOT the correct number of frames.
-        numFrames = tw.h.BitsPerSample;
+        // Get the number of individual frames, as we don't have this information
+        // from recording it here
+        numFrames = (size / (tw.h.NumChannels * tw.h.BitsPerSample / 8)) / WINDOW_SIZE;
     }
     else
     {
         printf("\n||| This is a RECORDING |||\n");
-        // Read from .wav file and carry out all processing
+        // Read from .wav file and carry out all processing.
+        // Number of frames already calculated during recording process
         tinywav_open_read(&tw, wavOutputLoc, TW_SPLIT);
     }
     
@@ -1454,24 +1462,14 @@ void* record(void* args)
             memset(nextSamples, 0, sizeof(nextSamples));
         }
         
-        
-        /*if (firstRun)
-        {
-            // If first run - simply use the first set of samples
-            memcpy(newSamples, samples, sizeof(newSamples));
-            firstRun = false;
-        }
-        else
-        {  */          
-            /*Overlap the window
-            * ------------------
-            * Use a 50% overlap by taking the latter half of the samples
-            * from the previous window, and averaging it with the first 
-            * half of the new window of samples continuously each FFT cycle
-            * to reduce potential data loss brought about by windowing.
-            */
-            overlapWindow(samples, nextSamples, overlapPrev, newSamples, WINDOW_SIZE, &firstRun, (i < numFrames - 1));
-        //}
+        /*Overlap the window
+        * ------------------
+        * Use a 50% overlap by taking the latter half of the samples
+        * from the previous window, and averaging it with the first 
+        * half of the new window of samples continuously each FFT cycle
+        * to reduce potential data loss brought about by windowing.
+        */
+        overlapWindow(samples, nextSamples, overlapPrev, newSamples, WINDOW_SIZE, &firstRun, (i < numFrames - 1));
         
         // Save the second half of the samples to be used in the next FFT
         // cycle for overlapping
@@ -1542,6 +1540,9 @@ void* record(void* args)
     
     // Output to MIDI file
     outputMidi(frameTime);
+    
+    totalLen = 0;
+    bufIndex = 0;
     
     fftwf_free(inp);
     fftwf_free(outp);
