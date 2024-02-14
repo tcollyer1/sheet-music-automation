@@ -12,7 +12,6 @@
 #define IMAG 1
 
 #define SAMPLE_RATE         22050
-#define WINDOW_SIZE         2048//4096
 #define CHANNELS            1       // Mono input
 #define MAX_FREQUENCY       1109    // For now, limit the range to three piano octaves from  
                                     // C3-C6, (but cap at C#6) so a frequency range of 
@@ -59,6 +58,7 @@ typedef struct
     GtkWidget*      msgLbl;
     GtkWidget*      fileOutput;
     GtkWidget*      fileUpload;
+    GtkWidget*      fftSize;
 } FIELD_DATA;
 
 int             tempoVal    = 0;
@@ -66,12 +66,14 @@ int             tempoVal    = 0;
 tMIDI_KEYSIG    keySigVal   = keyCMaj;
 
 int             beatsPerBar = 0;
-int             noteDenom   = 0;
+int             noteDiv     = 0;
 
 char            fileOutputLoc[500];
 char            wavOutputLoc[500];
 
 char            wavUploadLoc[500];
+
+int             WINDOW_SIZE = 2048;
 
 //////////////////////////////////////////////////////////////////////////////
 // Processing thread (to not freeze main GUI thread)
@@ -210,9 +212,11 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         
         // Get key signature
         char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
+        
+        char* tempFftSize = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->fftSize));
                 
         // Only start recording if valid values
-        if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL)
+        if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempFftSize != NULL)
         {
             newRecording = true;
             isUpload = false;
@@ -220,20 +224,24 @@ void toggleRecording(GtkWidget* widget, gpointer data)
             // Clear warning text - all values needed are present
             gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
             
+            // Set FFT size
+            WINDOW_SIZE = atoi(tempFftSize);
+            
             // Set destination file locations
             strcpy(fileOutputLoc, tempLoc);
             strcpy(wavOutputLoc, tempLoc);
             strcat(fileOutputLoc, ".mid");
             strcat(wavOutputLoc, ".wav");
             
-            keySigVal = getMIDIKey(tempKeyVal);
-            noteDenom = getTimeSigDenom(tempTimeSigDenomVal);
+            keySigVal   = getMIDIKey(tempKeyVal);
+            noteDiv     = getTimeSigDenom(tempTimeSigDenomVal);
             
             firstRun = 1;
         
             printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
             g_free(tempKeyVal);
             g_free(tempTimeSigDenomVal);
+            g_free(tempFftSize);
             
             printf("\n*** Starting recording thread... ***\n");
             
@@ -280,6 +288,9 @@ void processUpload(GtkWidget* widget, gpointer data)
     // Get MIDI file output location
     GtkFileChooser* chooser2 = GTK_FILE_CHOOSER(d->fileOutput);
     char* tempLoc = gtk_file_chooser_get_filename(chooser2);
+    
+    // Get FFT size
+    char* tempFftSize = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->fftSize));
         
     // Get tempo
     tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
@@ -296,9 +307,12 @@ void processUpload(GtkWidget* widget, gpointer data)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please upload a .wav file.");
     }
-    else if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL)
+    else if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL && tempFftSize != NULL)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
+        
+        // Set FFT size
+        WINDOW_SIZE = atoi(tempFftSize);
         
         // NOT a recording
         newRecording = false;
@@ -312,14 +326,17 @@ void processUpload(GtkWidget* widget, gpointer data)
         
         strcpy(wavUploadLoc, tempUploadLoc);
         
-        keySigVal = getMIDIKey(tempKeyVal);
-        noteDenom = getTimeSigDenom(tempTimeSigDenomVal);
+        keySigVal   = getMIDIKey(tempKeyVal);
+        noteDiv     = getTimeSigDenom(tempTimeSigDenomVal);
         
         firstRun = 1;
     
         printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
         g_free(tempKeyVal);
         g_free(tempTimeSigDenomVal);
+        g_free(tempLoc);
+        g_free(tempUploadLoc);
+        g_free(tempFftSize);
         
         printf("\n*** Starting recording thread... ***\n");
         
@@ -428,8 +445,9 @@ int getTimeSigDenom(const char* selected)
 }
 
 // Get the note type for a given note duration.
+//int getNoteType(float noteDur, float qNoteLen, int* upperPossibility, float* lenReq)
 int getNoteType(float noteDur, float qNoteLen)
-{    
+{           
     // qNoteLen represents the length in seconds a quarter note
     // (crotchet) is expected to be. We calculate this in
     // outputMidi() below
@@ -502,6 +520,118 @@ int getNoteType(float noteDur, float qNoteLen)
         noteType = getNoteType(noteDur - 0.25f, qNoteLen);
     }
     
+    // 2ND METHOD
+    // Semidemiquaver
+    /*if (noteDur >= qNoteLen * 0.125f && noteDur < qNoteLen * 0.25f)
+    {
+        if (fabs(qNoteLen * 0.125f - noteDur) > fabs(qNoteLen * 0.25f - noteDur))
+        {
+            printf("(could be a SEMIQUAVER) ");
+            (*upperPossibility) = MIDI_NOTE_SEMIQUAVER;
+            (*lenReq) = qNoteLen * 0.25f;
+        }
+        
+        printf("as a SEMIDEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIDEMIQUAVER;
+    }
+    
+    // Semiquavers
+    else if (noteDur >= qNoteLen * 0.25f && noteDur < qNoteLen * 0.375f)
+    {
+        if (fabs((qNoteLen * 0.25f) - noteDur) > fabs(qNoteLen * 0.375f - noteDur))
+        {
+            printf("(could be a DOTTED SEMIQUAVER) ");
+            (*upperPossibility) = MIDI_NOTE_DOTTED_SEMIQUAVER;
+            (*lenReq) = qNoteLen * 0.375f;
+        }
+        
+        printf("as a SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_SEMIQUAVER;
+    }
+    else if (noteDur >= qNoteLen * 0.375f && noteDur < qNoteLen * 0.5f)
+    {
+        if (fabs(qNoteLen * 0.375f - noteDur) > fabs(qNoteLen * 0.5f - noteDur))
+        {
+            printf("(could be a QUAVER) ");
+            (*upperPossibility) = MIDI_NOTE_QUAVER;
+            (*lenReq) = qNoteLen * 0.5f;
+        }
+        
+        printf("as a DOTTED SEMIQUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_SEMIQUAVER;
+    }
+    
+    // Quavers
+    else if (noteDur >= qNoteLen * 0.5f && noteDur < qNoteLen * 0.75f)
+    {
+        if (fabs(qNoteLen * 0.5f - noteDur) > fabs(qNoteLen * 0.75f - noteDur))
+        {
+            printf("(could be a DOTTED QUAVER) ");
+            (*upperPossibility) = MIDI_NOTE_DOTTED_QUAVER;
+            (*lenReq) = qNoteLen * 0.75f;
+        }
+        
+        printf("as a QUAVER\n====\n");
+        noteType = MIDI_NOTE_QUAVER;
+    }
+    else if (noteDur >= qNoteLen * 0.75f && noteDur < qNoteLen)
+    {
+        if (fabs(qNoteLen * 0.75f - noteDur) > fabs(qNoteLen - noteDur))
+        {
+            printf("(could be a CROTCHET) ");
+            (*upperPossibility) = MIDI_NOTE_CROCHET;
+            (*lenReq) = qNoteLen;
+        }
+        
+        printf("as a DOTTED QUAVER\n====\n");
+        noteType = MIDI_NOTE_DOTTED_QUAVER;
+    }
+    
+    // Crotchets
+    else if (noteDur >= qNoteLen && noteDur < qNoteLen * 1.5f)
+    {
+        if (fabs(qNoteLen - noteDur) > fabs(qNoteLen * 1.5f - noteDur))
+        {
+            printf("(could be a DOTTED CROTCHET) ");
+            (*upperPossibility) = MIDI_NOTE_DOTTED_CROCHET;
+            (*lenReq) = qNoteLen * 1.5f;
+        }
+        
+        printf("as a CROTCHET\n====\n");
+        noteType = MIDI_NOTE_CROCHET;
+    }
+    else if (noteDur >= qNoteLen * 1.5f && noteDur < qNoteLen * 2.0f)
+    {
+        if (fabs(qNoteLen * 1.5f - noteDur) > fabs(qNoteLen * 2.0f - noteDur))
+        {
+            printf("(could be a MINIM) ");
+            (*upperPossibility) = MIDI_NOTE_MINIM;
+            (*lenReq) = qNoteLen * 2.0f;
+        }
+        
+        printf("as a DOTTED CROTCHET\n====\n");
+        noteType = MIDI_NOTE_DOTTED_CROCHET;
+    }
+    
+    // Minims
+    else if (noteDur >= qNoteLen * 2.0f && noteDur < qNoteLen * 3.0f)
+    {
+        if (fabs(qNoteLen * 2.0f - noteDur) > fabs(qNoteLen * 3.0f - noteDur))
+        {
+            printf("(could be a DOTTED MINIM) ");
+            (*upperPossibility) = MIDI_NOTE_DOTTED_MINIM;
+            (*lenReq) = qNoteLen * 3.0f;
+        }
+        
+        printf("as a MINIM\n====\n");
+        noteType = MIDI_NOTE_MINIM;
+    }
+    else if (noteDur >= qNoteLen * 3.0f)
+    {
+        printf("as a DOTTED MINIM\n====\n");
+        noteType = MIDI_NOTE_DOTTED_MINIM;
+    }*/
+    
     return (noteType);
 }
 
@@ -535,9 +665,8 @@ void outputMidi(float frameTime)
     
     if (midiOutput)
     {
-        // Assign tempo of 60bpm for now.
-        // Starts at track 1. May need to start it from
-        // track 0 instead
+        // Assign tempo.
+        // Starts at track 1.
         midiSongAddTempo(midiOutput, track, tempoVal);
         
         // Set key signature.
@@ -552,19 +681,47 @@ void outputMidi(float frameTime)
         // Set instrument. Not really essential for its end purpose
         midiTrackAddProgramChange(midiOutput, track, MIDI_PATCH_ELECTRIC_GRAND_PIANO);
         
-        // Simple 4/4 time for now
-        midiSongAddSimpleTimeSig(midiOutput, track, beatsPerBar, noteDenom);
+        // Set time signature.
+        midiSongAddSimpleTimeSig(midiOutput, track, beatsPerBar, noteDiv);
     
         // Get the length of time one beat (crotchet) will account for given
         // the tempo
         float beatsPerSec = (float)tempoVal / 60;
+        //float beatsPerSec = 60.0f / (float)tempoVal;
         
         // Fastest note to detect is quavers, FOR NOW.
         float minimumNoteDur = beatsPerSec / 2;
         
         printf("\n[CROTCHETS/s: %f \t QUAVER NOTE LEN: %f]\n", beatsPerSec, minimumNoteDur);
+        //printf("\n[CROTCHETS/s: %f]\n", beatsPerSec);
         
         // Iterate through our buffers to write out the data
+        // TESTING ANOTHER METHOD
+        /*for (int i = 0; i < totalLen; i++)
+        {
+            printf("\n--- CHECKING NOTE %d OF %d (PITCH %s, MIDI %d, LENGTH %d) ---\n", i, totalLen - 1, recPitches[i], recMidiPitches[i], recLengths[i]);
+            int upperPossibility = 0;
+            float upperNoteLenReq = 0.0f;
+            int noteType = getNoteType(recLengths[i], beatsPerSec / frameTime, &upperPossibility, &upperNoteLenReq);
+            
+            if (upperPossibility && i < totalLen - 1)
+            {
+                int nextNoteLen = recLengths[i + 1];
+                
+                if ((float)nextNoteLen > upperNoteLenReq - (float)recLengths[i])
+                {
+                    printf("--> (Adjusting to upper value)");
+                    noteType = upperPossibility;
+                }
+            }
+
+            if (strcmp(recPitches[i], "N/A") != 0)
+            {                
+                midiTrackAddNote(midiOutput, track, recMidiPitches[i], noteType, MIDI_VOL_HALF, TRUE, FALSE);
+            }
+        }*/
+        
+        
         for (int i = 0; i < totalLen; i++)
         {
             // Get note length by multiplying the duration of the frame
@@ -599,7 +756,7 @@ void outputMidi(float frameTime)
         
         midiFileClose(midiOutput);
         
-        printf("\nMIDI file output.mid successfully created.\n");
+        printf("\nMIDI file successfully created.\n");
     }
     else
     {
@@ -977,8 +1134,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         }
         
         int realMidiNote = tempNoteBuf[highestIdx];
-        
-        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+
         pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
         
         strcpy(prevPitch, curPitch);
@@ -1023,8 +1179,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         }
         
         int realMidiNote = tempNoteBuf[highestIdx];
-        
-        //pitchesAdd(prevPitch, lastNoteLen, prevMidiNote);
+
         pitchesAdd(prevPitch, lastNoteLen, realMidiNote);
 
         strcpy(prevPitch, "N/A");
@@ -1576,11 +1731,18 @@ void activate(GtkApplication* app, gpointer data)
         gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.key), NULL, keys[i]);
     }
     
-    // Set up time signature (denominator) selection combo box
+    // Set up time signature (note division) selection combo box
     inputData.timeDenom = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Quavers");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Crotchets");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Minims");
+    
+    // Set up FFT size selection combo box
+    inputData.fftSize = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "1024");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "2048");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "4096");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "8192");
 
     // Time signature & tempo entry fields
     inputData.time      = gtk_spin_button_new_with_range(2, 16, 1);
@@ -1593,6 +1755,7 @@ void activate(GtkApplication* app, gpointer data)
     // Labels
     GtkWidget* timeLbl          = gtk_label_new("Time signature (beats/bar): ");
     GtkWidget* timeDenomLbl     = gtk_label_new("Time signature (division): ");
+    GtkWidget* fftSizeLbl       = gtk_label_new("FFT size: ");
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
     GtkWidget* fileLocLbl       = gtk_label_new("File output location: ");
@@ -1606,6 +1769,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(inputData.msgLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(fftSizeLbl), 1.0);
     
     // Set up the MIDI notes to correspond with list of pitches
     setMidiNotes();
@@ -1642,6 +1806,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), tempoLbl, 1, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), keyLbl, 1, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fftSizeLbl, 4, 2, 1, 1);
 
     gtk_grid_attach(GTK_GRID(pGrid), inputData.time, 2, 1, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.timeDenom, 5, 1, 1, 1);    
@@ -1649,6 +1814,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 4, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.fftSize, 5, 2, 1, 1);
 
     gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), uploadBtn, 3, 5, 1, 1);
