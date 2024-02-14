@@ -273,10 +273,11 @@ void processUpload(GtkWidget* widget, gpointer data)
     
     gint pickResult = gtk_dialog_run(GTK_DIALOG(d->fileUpload));
     
+    // Get .wav file upload location
     GtkFileChooser* chooser1 = GTK_FILE_CHOOSER(d->fileUpload);
     char* tempUploadLoc = gtk_file_chooser_get_filename(chooser1);
         
-    // Get file output location
+    // Get MIDI file output location
     GtkFileChooser* chooser2 = GTK_FILE_CHOOSER(d->fileOutput);
     char* tempLoc = gtk_file_chooser_get_filename(chooser2);
         
@@ -291,7 +292,11 @@ void processUpload(GtkWidget* widget, gpointer data)
     char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
             
     // Only start processing if valid values
-    if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL)
+    if (tempUploadLoc == NULL || strlen(tempUploadLoc) < 5 || strcmp(".wav", &tempUploadLoc[strlen(tempUploadLoc) - 4]) != 0)
+    {
+        gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please upload a .wav file.");
+    }
+    else if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
         
@@ -1587,17 +1592,13 @@ void activate(GtkApplication* app, gpointer data)
 
     // Labels
     GtkWidget* timeLbl          = gtk_label_new("Time signature (beats/bar): ");
-    GtkWidget* timeDenomLbl     = gtk_label_new("Time signature (denominator): ");
+    GtkWidget* timeDenomLbl     = gtk_label_new("Time signature (division): ");
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
     GtkWidget* fileLocLbl       = gtk_label_new("File output location: ");
     
     // Label that will display any warnings to the user
     inputData.msgLbl            = gtk_label_new("");
-
-    //gtk_entry_set_max_length(GTK_ENTRY(inputData.time), 0);
-    //gtk_entry_set_max_length(GTK_ENTRY(inputData.key), 0);
-    //gtk_entry_set_max_length(GTK_ENTRY(fileLoc), 0);
 
     gtk_label_set_xalign(GTK_LABEL(timeLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(timeDenomLbl), 1.0);
@@ -1646,7 +1647,6 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), inputData.timeDenom, 5, 1, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.tempo, 2, 2, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
-    //gtk_grid_attach(GTK_GRID(pGrid), fileLoc, 2, 4, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 4, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 4, 1, 1);
 
