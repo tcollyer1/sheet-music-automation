@@ -6,6 +6,7 @@
 #include <portaudio.h>
 #include <gtk/gtk.h>
 #include <fftw3.h>
+#include "midifile.h"
 
 // PortAudio & GTK funcs
 void 	checkError(PaError err);
@@ -18,8 +19,8 @@ void	toggleRecording(GtkWidget* widget, gpointer data);
 // FFT preparation & calculation
 void 	convertToComplexArray(float* samples, fftwf_complex* complex, int length);
 
-void 	saveOverlappedSamples(const float* samples, float* overlap, int len);
-void 	overlapWindow(const float* samples, const float* overlap, float* newSamples, int len);
+void 	saveOverlappedSamples(const float* samples, float* overlapPrev, int len);
+void 	overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun);
 
 void	lowPassData(float* input, float* output, int length, int cutoff);
 
@@ -34,13 +35,16 @@ void 	downsample(const fftwf_complex* result, float* out, int outLength, int idx
 void 	hps_getPeak(float* dsResult, int len, bool isOnset);
 float   interpolate(float first, float last);
 
-char* 	getPitch(float freq, int* midiNote);
+char* 			getPitch(float freq, int* midiNote);
+tMIDI_KEYSIG 	getMIDIKey(const char* keySig);
+int 			getTimeSigDenom(const char* selected);
 
 // Adding to output buffers
 void 	pitchesAdd(char* pitch, int length, int midiNote);
 void 	displayBufferContent();
 
 // MIDI
+//int 	getNoteType(float noteDur, float qNoteLen, int* upperPossibility, float* lenReq);
 int 	getNoteType(float noteDur, float qNoteLen);
 void 	setMidiNotes();
 void 	outputMidi(float frameTime);
