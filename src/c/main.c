@@ -238,7 +238,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
             
             firstRun = 1;
         
-            printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+            printf("\n=== Key sig: %s, tempo: %d, FFT size: %d ===\n", tempKeyVal, tempoVal, WINDOW_SIZE);
             g_free(tempKeyVal);
             g_free(tempTimeSigDenomVal);
             g_free(tempFftSize);
@@ -331,7 +331,7 @@ void processUpload(GtkWidget* widget, gpointer data)
         
         firstRun = 1;
     
-        printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+        printf("\n=== Key sig: %s, tempo: %d, FFT size: %d ===\n", tempKeyVal, tempoVal, WINDOW_SIZE);
         g_free(tempKeyVal);
         g_free(tempTimeSigDenomVal);
         g_free(tempLoc);
@@ -456,8 +456,8 @@ int getNoteType(float noteDur, float qNoteLen)
     
     if (noteDur == 0.0f)
     {
-        // Round to next smallest note (for now, QUAVER)
-        noteDur = 0.5f;
+        // Round to next smallest note
+        noteDur = 0.25f;
     }
     
     // Semidemiquaver
@@ -644,7 +644,6 @@ tMIDI_KEYSIG getMIDIKey(const char* keySig)
     {
         if (strcmp(keySig, keys[i]) == 0)
         {
-            printf("[!] MIDI key found --> %s (index %d)", keys[i], i);
             idx = i;
             break;
         }
@@ -692,7 +691,11 @@ void outputMidi(float frameTime)
         // Fastest note to detect is quavers, FOR NOW.
         float minimumNoteDur = beatsPerSec / 2;
         
-        printf("\n[CROTCHETS/s: %f \t QUAVER NOTE LEN: %f]\n", beatsPerSec, minimumNoteDur);
+        // Get the minimum note length we're detecting using the length (secs) of a crotchet
+        float crotchetLen = 60.0f / (float)tempoVal;
+        float minPerSec = (crotchetLen / 4 >= 0.25f ? crotchetLen / 4 : 0.25f);
+        
+        printf("\n[CROTCHET LEN: %f s \t SEMIQ. NOTE LEN: %f s]\n", crotchetLen, minPerSec);
         //printf("\n[CROTCHETS/s: %f]\n", beatsPerSec);
         
         // Iterate through our buffers to write out the data
@@ -724,15 +727,32 @@ void outputMidi(float frameTime)
         
         for (int i = 0; i < totalLen; i++)
         {
+            int tempLen = recLengths[i];
+            
+            // If next note is silence, combine with current note for improved rhythmic
+            // accuracy.
+            //
+            // This does not, however, capture performer articulation necessarily accurately,
+            // due to not displaying rests - but we are making a compromise for now.
+            if (i < totalLen - 1)
+            {
+                if (strcmp(recPitches[i+1], "N/A") == 0)
+                {
+                    tempLen += recLengths[i+1];
+                }
+            }
+            
             // Get note length by multiplying the duration of the frame
             // by the number of frames the note persists for, then rounding
             // this to (for now) the nearest half-note (quaver).
-            float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            //float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            float noteLen = (float)round((frameTime * tempLen) / minPerSec) * minPerSec;
+            
             
             // For now - in case it rounds down to 0
             if (noteLen == 0.0f)
             {
-                noteLen = minimumNoteDur;
+                noteLen = minPerSec;
             }
             
             // If not silence
@@ -740,18 +760,18 @@ void outputMidi(float frameTime)
             {
                 printf("\n====\nWriting %s (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, beatsPerSec, noteLen);
                 
-                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
+                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, crotchetLen), MIDI_VOL_HALF, TRUE, FALSE);
             }
-            else
+            /*else
             {
                 // Not invalid length of silence
                 if (recLengths[i] > 1)
                 {
-                    printf("\n====\nWriting a REST (NOTE LEN %f)\n", noteLen);
+                    printf("\n====\nWriting a REST (NOTE LEN %d, ROUNDED %f)\n", recLengths[i], noteLen);
                     
                     midiTrackAddRest(midiOutput, track, getNoteType(noteLen, beatsPerSec), FALSE);
                 }
-            }
+            }*/
         }
         
         midiFileClose(midiOutput);
@@ -1640,7 +1660,7 @@ void* record(void* args)
         * Remove unwanted/higher frequencies or noise from the sample
         * collected from the microphone.
         * 
-        * For now, limit the range to three octaves from C3-C6, so a frequency
+        * Limit the range to three octaves from C3-C6, so a frequency
         * range of 130.8 Hz - 1108.73 Hz
         */
         //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
@@ -1712,6 +1732,8 @@ void* record(void* args)
     pthread_mutex_lock(&procLock);
     processing = 0; // Indicate to main (GTK) thread that processing has now stopped
     pthread_mutex_unlock(&procLock);
+    
+    printf("\nLeaving record() function\n");
 }
 
 void activate(GtkApplication* app, gpointer data)
@@ -1788,7 +1810,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
     gtk_window_set_default_size(GTK_WINDOW(pWindow), 1000, 800);
     gtk_window_set_title(GTK_WINDOW(pWindow), "Sheet Music Automation");
-    gtk_window_set_resizable(GTK_WINDOW(pWindow), FALSE); // Non-resizable for now
+    gtk_window_set_resizable(GTK_WINDOW(pWindow), TRUE); // Is resizable
 
     gtk_grid_set_column_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
