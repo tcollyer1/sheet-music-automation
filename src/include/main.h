@@ -20,7 +20,8 @@ void	toggleRecording(GtkWidget* widget, gpointer data);
 void 	convertToComplexArray(float* samples, fftwf_complex* complex, int length);
 
 void 	saveOverlappedSamples(const float* samples, float* overlapPrev, int len);
-void 	overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun);
+//void 	overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun);
+void	overlapWindow(const float* nextSamples, const float* overlapPrev, float* newSamples, int len);
 
 void	lowPassData(float* input, float* output, int length, int cutoff);
 
@@ -44,9 +45,9 @@ void 	pitchesAdd(char* pitch, int length, int midiNote);
 void 	displayBufferContent();
 
 // MIDI
-//int 	getNoteType(float noteDur, float qNoteLen, int* upperPossibility, float* lenReq);
 int 	getNoteType(float noteDur, float qNoteLen);
 void 	setMidiNotes();
 void 	outputMidi(float frameTime);
+float	getQuantVal(const char* input);
 
 #endif
