@@ -222,7 +222,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         char* tempFftSize = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->fftSize));
                 
         // Only start recording if valid values
-        if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
+        if (tempoVal && beatsPerBar && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
         {
             newRecording = true;
             isUpload = false;
@@ -305,11 +305,12 @@ void processUpload(GtkWidget* widget, gpointer data)
 
     printf("\nBefore segfault\n");       
     // Get tempo
-    tempoVal = gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo)); // Segmentation fault here
+    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo)); // Segmentation fault here @ size 8192 FFT
     printf("\nAfter segfault\n");
         
     // Get time signature
     beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
+
     char* tempTimeSigDenomVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->timeDenom));
     
     // Get key signature
@@ -320,7 +321,7 @@ void processUpload(GtkWidget* widget, gpointer data)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please upload a .wav file.");
     }
-    else if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
+    else if (tempoVal && beatsPerBar && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
         
@@ -347,7 +348,7 @@ void processUpload(GtkWidget* widget, gpointer data)
         
         firstRun = 1;
     
-        printf("\n=== Key sig: %s, tempo: %d, FFT size: %d ===\n", tempKeyVal, tempoVal, WINDOW_SIZE);
+        printf("\n=== Key sig: %s, tempo: %d, FFT size: %d, time sig: %d %s per bar ===\n", tempKeyVal, tempoVal, WINDOW_SIZE, beatsPerBar, tempTimeSigDenomVal);
         g_free(tempKeyVal);
         g_free(tempTimeSigDenomVal);
         g_free(tempLoc);
@@ -434,6 +435,7 @@ void displayBufferContent()
     {
         printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
     }
+    printf("\ntotalLen = %d", totalLen);
     
     printf("\n");
 }
@@ -860,7 +862,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     static int tempNoteBuf[20];
     static int tempNoteCount[20];
     
-    // Reset static values if a new recording
+    // Reset static values if a new recording/upload
     if (firstRun)
     {
         prevAmplitude = 0.0f;
@@ -1684,7 +1686,6 @@ void activate(GtkApplication* app, gpointer data)
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "1024");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "2048");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "4096");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "8192");
 
     // Set up quantisation factor selection combo box
     inputData.quantisation = gtk_combo_box_text_new();
@@ -1748,9 +1749,8 @@ void activate(GtkApplication* app, gpointer data)
 
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
 
-    // Add grid to the created window
+    // Add box containing the grid to the created window
     gtk_container_add(GTK_CONTAINER(pWindow), pBox);
-    gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
 
     // Attach textboxes, labels and button to grid
     gtk_grid_attach(GTK_GRID(pGrid), timeLbl, 1, 1, 1, 1);
@@ -1778,9 +1778,6 @@ void activate(GtkApplication* app, gpointer data)
     // Connect click events to callback functions
     g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), &inputData);
     g_signal_connect(uploadBtn, "clicked", G_CALLBACK(processUpload), &inputData);
-
-    // Make the X button close the window correctly & end program
-    g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     // Show window
     gtk_widget_show_all(pWindow);
