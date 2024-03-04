@@ -59,21 +59,24 @@ typedef struct
     GtkWidget*      fileOutput;
     GtkWidget*      fileUpload;
     GtkWidget*      fftSize;
+    GtkWidget*      quantisation;
 } FIELD_DATA;
 
-int             tempoVal    = 0;
+static int      tempoVal            = 0;
 
-tMIDI_KEYSIG    keySigVal   = keyCMaj;
+tMIDI_KEYSIG    keySigVal           = keyCMaj;
 
-int             beatsPerBar = 0;
-int             noteDiv     = 0;
+static int      beatsPerBar         = 0;
+static int      noteDiv             = 0;
 
-char            fileOutputLoc[500];
-char            wavOutputLoc[500];
+static float    quantisationFactor  = 1.0f;
 
-char            wavUploadLoc[500];
+static char     fileOutputLoc[500];
+static char     wavOutputLoc[500];
 
-int             WINDOW_SIZE = 2048;
+static char     wavUploadLoc[500];
+
+static int      WINDOW_SIZE         = 2048;
 
 //////////////////////////////////////////////////////////////////////////////
 // Processing thread (to not freeze main GUI thread)
@@ -117,35 +120,35 @@ char* notes[37] =
 // for each pitch, but also a minor key.
 const char* keys[OCTAVE_SIZE * 2] 
         = {     
-            "C major", "C minor",
-            "Db major", "C# minor",
-            "D major", "D minor",
-            "Eb major", "Eb minor",
-            "E major", "E minor",
-            "F major", "F minor",
-            "Gb major", "F# minor",
-            "G major", "G minor",
-            "Ab major", "Ab minor",
-            "A major", "A minor",
-            "Bb major", "Bb minor",
-            "B major", "B minor"
+            "C major", "A minor",
+            "Db major", "Bb minor",
+            "D major", "B minor",
+            "Eb major", "C minor",
+            "E major", "C# minor",
+            "F major", "D minor",
+            "Gb major", "Eb minor",
+            "G major", "E minor",
+            "Ab major", "F minor",
+            "A major", "F# minor",
+            "Bb major", "G minor",
+            "B major", "Ab minor"
         };
                 
-const tMIDI_KEYSIG midiKeys[OCTAVE_SIZE * 2]
+const tMIDI_KEYSIG midiKeys[OCTAVE_SIZE]
         = { 
-            // Major        // Minor
-            keyCMaj,        keyCMin,
-            keyDFlatMaj,    keyCSharpMin,
-            keyDMaj,        keyDMin,
-            keyEFlatMaj,    keyEFlatMin,
-            keyEMaj,        keyEMin,
-            keyFMaj,        keyFMin,
-            keyGFlatMaj,    keyFSharpMin,
-            keyGMaj,        keyGMin,
-            keyAFlatMaj,    keyAFlatMin,
-            keyAMaj,        keyAMin,
-            keyBFlatMaj,    keyBFlatMin,
-            keyBMaj,        keyBMin
+            // Major
+            keyCMaj,    
+            keyDFlatMaj,
+            keyDMaj,    
+            keyEFlatMaj,
+            keyEMaj,    
+            keyFMaj,    
+            keyGFlatMaj,
+            keyGMaj,    
+            keyAFlatMaj,
+            keyAMaj,    
+            keyBFlatMaj,
+            keyBMaj,    
         };
 
 //////////////////////////////////////////////////////////////////////////////
@@ -209,6 +212,9 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         // Get time signature
         beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
         char* tempTimeSigDenomVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->timeDenom));
+
+        // Get quantisation factor
+        char* tempQuant = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->quantisation));
         
         // Get key signature
         char* tempKeyVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->key));
@@ -216,7 +222,7 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         char* tempFftSize = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->fftSize));
                 
         // Only start recording if valid values
-        if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempFftSize != NULL)
+        if (tempoVal && beatsPerBar && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
         {
             newRecording = true;
             isUpload = false;
@@ -226,6 +232,9 @@ void toggleRecording(GtkWidget* widget, gpointer data)
             
             // Set FFT size
             WINDOW_SIZE = atoi(tempFftSize);
+
+            // Set quantisation factor
+            quantisationFactor = getQuantVal(tempQuant);
             
             // Set destination file locations
             strcpy(fileOutputLoc, tempLoc);
@@ -238,10 +247,11 @@ void toggleRecording(GtkWidget* widget, gpointer data)
             
             firstRun = 1;
         
-            printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+            printf("\n=== Key sig: %s, tempo: %d, FFT size: %d ===\n", tempKeyVal, tempoVal, WINDOW_SIZE);
             g_free(tempKeyVal);
             g_free(tempTimeSigDenomVal);
             g_free(tempFftSize);
+            g_free(tempQuant);
             
             printf("\n*** Starting recording thread... ***\n");
             
@@ -277,9 +287,7 @@ void processUpload(GtkWidget* widget, gpointer data)
     int threadResult2 = 0;
     
     // Take a copy of the input data fed in for reading here
-    FIELD_DATA* d = (FIELD_DATA*)data;    
-    
-    gint pickResult = gtk_dialog_run(GTK_DIALOG(d->fileUpload));
+    FIELD_DATA* d = (FIELD_DATA*)data;
     
     // Get .wav file upload location
     GtkFileChooser* chooser1 = GTK_FILE_CHOOSER(d->fileUpload);
@@ -291,12 +299,18 @@ void processUpload(GtkWidget* widget, gpointer data)
     
     // Get FFT size
     char* tempFftSize = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->fftSize));
-        
+
+    // Get quantisation factor
+    char* tempQuant = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->quantisation));
+
+    printf("\nBefore segfault\n");       
     // Get tempo
-    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
+    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo)); // Segmentation fault here @ size 8192 FFT
+    printf("\nAfter segfault\n");
         
     // Get time signature
     beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
+
     char* tempTimeSigDenomVal = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->timeDenom));
     
     // Get key signature
@@ -307,12 +321,15 @@ void processUpload(GtkWidget* widget, gpointer data)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please upload a .wav file.");
     }
-    else if (tempoVal && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL && tempFftSize != NULL)
+    else if (tempoVal && beatsPerBar && tempKeyVal != NULL && tempTimeSigDenomVal != NULL && tempLoc != NULL && tempUploadLoc != NULL && tempFftSize != NULL && tempQuant != NULL)
     {
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "");
         
         // Set FFT size
         WINDOW_SIZE = atoi(tempFftSize);
+
+        // Set quantisation factor
+        quantisationFactor = getQuantVal(tempQuant);
         
         // NOT a recording
         newRecording = false;
@@ -331,12 +348,13 @@ void processUpload(GtkWidget* widget, gpointer data)
         
         firstRun = 1;
     
-        printf("\n=== Key sig: %s, tempo: %d ===\n", tempKeyVal, tempoVal);
+        printf("\n=== Key sig: %s, tempo: %d, FFT size: %d, time sig: %d %s per bar ===\n", tempKeyVal, tempoVal, WINDOW_SIZE, beatsPerBar, tempTimeSigDenomVal);
         g_free(tempKeyVal);
         g_free(tempTimeSigDenomVal);
         g_free(tempLoc);
         g_free(tempUploadLoc);
         g_free(tempFftSize);
+        g_free(tempQuant);
         
         printf("\n*** Starting recording thread... ***\n");
         
@@ -359,6 +377,31 @@ void processUpload(GtkWidget* widget, gpointer data)
     {
         // Else display a message
         gtk_label_set_text(GTK_LABEL(d->msgLbl), "Please correct missing/invalid values");
+    }
+}
+
+// Function to extract the quantisation value
+float getQuantVal(const char* input)
+{
+    if (strcmp(input, "1/1 note") == 0)
+    {
+        return 0.25f;
+    }
+    else if (strcmp(input, "1/2 note") == 0)
+    {
+        return 0.5f;
+    }
+    else if (strcmp(input, "1/4 note") == 0)
+    {
+        return 1.0f;
+    }
+    else if (strcmp(input, "1/8 note") == 0)
+    {
+        return 2.0f;
+    }
+    else if (strcmp(input, "1/16 note") == 0)
+    {
+        return 4.0f;
     }
 }
 
@@ -392,6 +435,7 @@ void displayBufferContent()
     {
         printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
     }
+    printf("\ntotalLen = %d", totalLen);
     
     printf("\n");
 }
@@ -445,7 +489,6 @@ int getTimeSigDenom(const char* selected)
 }
 
 // Get the note type for a given note duration.
-//int getNoteType(float noteDur, float qNoteLen, int* upperPossibility, float* lenReq)
 int getNoteType(float noteDur, float qNoteLen)
 {           
     // qNoteLen represents the length in seconds a quarter note
@@ -456,8 +499,8 @@ int getNoteType(float noteDur, float qNoteLen)
     
     if (noteDur == 0.0f)
     {
-        // Round to next smallest note (for now, QUAVER)
-        noteDur = 0.5f;
+        // Round to next smallest note
+        noteDur = 0.25f;
     }
     
     // Semidemiquaver
@@ -514,127 +557,23 @@ int getNoteType(float noteDur, float qNoteLen)
         printf("as a DOTTED MINIM\n====\n");
         noteType = MIDI_NOTE_DOTTED_MINIM;
     }
+
+    // Semibreve
+    else if (noteDur == qNoteLen * 4.0f)
+    {
+        printf("as a SEMIBREVE\n====\n");
+        noteType = MIDI_NOTE_BREVE; // Semibreve
+    }
     
     else
     {
         noteType = getNoteType(noteDur - 0.25f, qNoteLen);
     }
     
-    // 2ND METHOD
-    // Semidemiquaver
-    /*if (noteDur >= qNoteLen * 0.125f && noteDur < qNoteLen * 0.25f)
-    {
-        if (fabs(qNoteLen * 0.125f - noteDur) > fabs(qNoteLen * 0.25f - noteDur))
-        {
-            printf("(could be a SEMIQUAVER) ");
-            (*upperPossibility) = MIDI_NOTE_SEMIQUAVER;
-            (*lenReq) = qNoteLen * 0.25f;
-        }
-        
-        printf("as a SEMIDEMIQUAVER\n====\n");
-        noteType = MIDI_NOTE_SEMIDEMIQUAVER;
-    }
-    
-    // Semiquavers
-    else if (noteDur >= qNoteLen * 0.25f && noteDur < qNoteLen * 0.375f)
-    {
-        if (fabs((qNoteLen * 0.25f) - noteDur) > fabs(qNoteLen * 0.375f - noteDur))
-        {
-            printf("(could be a DOTTED SEMIQUAVER) ");
-            (*upperPossibility) = MIDI_NOTE_DOTTED_SEMIQUAVER;
-            (*lenReq) = qNoteLen * 0.375f;
-        }
-        
-        printf("as a SEMIQUAVER\n====\n");
-        noteType = MIDI_NOTE_SEMIQUAVER;
-    }
-    else if (noteDur >= qNoteLen * 0.375f && noteDur < qNoteLen * 0.5f)
-    {
-        if (fabs(qNoteLen * 0.375f - noteDur) > fabs(qNoteLen * 0.5f - noteDur))
-        {
-            printf("(could be a QUAVER) ");
-            (*upperPossibility) = MIDI_NOTE_QUAVER;
-            (*lenReq) = qNoteLen * 0.5f;
-        }
-        
-        printf("as a DOTTED SEMIQUAVER\n====\n");
-        noteType = MIDI_NOTE_DOTTED_SEMIQUAVER;
-    }
-    
-    // Quavers
-    else if (noteDur >= qNoteLen * 0.5f && noteDur < qNoteLen * 0.75f)
-    {
-        if (fabs(qNoteLen * 0.5f - noteDur) > fabs(qNoteLen * 0.75f - noteDur))
-        {
-            printf("(could be a DOTTED QUAVER) ");
-            (*upperPossibility) = MIDI_NOTE_DOTTED_QUAVER;
-            (*lenReq) = qNoteLen * 0.75f;
-        }
-        
-        printf("as a QUAVER\n====\n");
-        noteType = MIDI_NOTE_QUAVER;
-    }
-    else if (noteDur >= qNoteLen * 0.75f && noteDur < qNoteLen)
-    {
-        if (fabs(qNoteLen * 0.75f - noteDur) > fabs(qNoteLen - noteDur))
-        {
-            printf("(could be a CROTCHET) ");
-            (*upperPossibility) = MIDI_NOTE_CROCHET;
-            (*lenReq) = qNoteLen;
-        }
-        
-        printf("as a DOTTED QUAVER\n====\n");
-        noteType = MIDI_NOTE_DOTTED_QUAVER;
-    }
-    
-    // Crotchets
-    else if (noteDur >= qNoteLen && noteDur < qNoteLen * 1.5f)
-    {
-        if (fabs(qNoteLen - noteDur) > fabs(qNoteLen * 1.5f - noteDur))
-        {
-            printf("(could be a DOTTED CROTCHET) ");
-            (*upperPossibility) = MIDI_NOTE_DOTTED_CROCHET;
-            (*lenReq) = qNoteLen * 1.5f;
-        }
-        
-        printf("as a CROTCHET\n====\n");
-        noteType = MIDI_NOTE_CROCHET;
-    }
-    else if (noteDur >= qNoteLen * 1.5f && noteDur < qNoteLen * 2.0f)
-    {
-        if (fabs(qNoteLen * 1.5f - noteDur) > fabs(qNoteLen * 2.0f - noteDur))
-        {
-            printf("(could be a MINIM) ");
-            (*upperPossibility) = MIDI_NOTE_MINIM;
-            (*lenReq) = qNoteLen * 2.0f;
-        }
-        
-        printf("as a DOTTED CROTCHET\n====\n");
-        noteType = MIDI_NOTE_DOTTED_CROCHET;
-    }
-    
-    // Minims
-    else if (noteDur >= qNoteLen * 2.0f && noteDur < qNoteLen * 3.0f)
-    {
-        if (fabs(qNoteLen * 2.0f - noteDur) > fabs(qNoteLen * 3.0f - noteDur))
-        {
-            printf("(could be a DOTTED MINIM) ");
-            (*upperPossibility) = MIDI_NOTE_DOTTED_MINIM;
-            (*lenReq) = qNoteLen * 3.0f;
-        }
-        
-        printf("as a MINIM\n====\n");
-        noteType = MIDI_NOTE_MINIM;
-    }
-    else if (noteDur >= qNoteLen * 3.0f)
-    {
-        printf("as a DOTTED MINIM\n====\n");
-        noteType = MIDI_NOTE_DOTTED_MINIM;
-    }*/
-    
     return (noteType);
 }
 
+// Get the tMIDI_KEYSIG key signature for generating the MIDI file.
 tMIDI_KEYSIG getMIDIKey(const char* keySig)
 {
     int idx = 0;
@@ -644,8 +583,17 @@ tMIDI_KEYSIG getMIDIKey(const char* keySig)
     {
         if (strcmp(keySig, keys[i]) == 0)
         {
-            printf("[!] MIDI key found --> %s (index %d)", keys[i], i);
-            idx = i;
+            /*keys arr written in major + minor key pairs (24 key signatures).
+            * midiKeys only has 12 key signatures - the remaining 12 are just the
+            * minor equivalent keys that share the exact same key signature as their
+            * major key counterparts. E.g. C major and A minor are technically the same,
+            * but A minor has additional accidentals (raised 6th/7th) which will be notated
+            * anyway as a result of the pitch detection.
+            * 
+            * Therefore, we divide (integer division) by 2 to get the equivalent index in
+            * the midiKeys array.
+            */ 
+            idx = i / 2;
             break;
         }
     }
@@ -670,9 +618,6 @@ void outputMidi(float frameTime)
         midiSongAddTempo(midiOutput, track, tempoVal);
         
         // Set key signature.
-        // TODO: currently there is an issue where any minor key 
-        // inputted is transcribed as its major counterpart, even
-        // directly specifying the desired tMIDI_KEYSIG here...
         midiSongAddKeySig(midiOutput, track, (tMIDI_KEYSIG)keySigVal);
         
         // Set current channel before writing data (only using one)
@@ -692,47 +637,42 @@ void outputMidi(float frameTime)
         // Fastest note to detect is quavers, FOR NOW.
         float minimumNoteDur = beatsPerSec / 2;
         
-        printf("\n[CROTCHETS/s: %f \t QUAVER NOTE LEN: %f]\n", beatsPerSec, minimumNoteDur);
-        //printf("\n[CROTCHETS/s: %f]\n", beatsPerSec);
+        // Get the minimum note length we're detecting using the length (secs) of a crotchet
+        float crotchetLen = 60.0f / (float)tempoVal;
         
-        // Iterate through our buffers to write out the data
-        // TESTING ANOTHER METHOD
-        /*for (int i = 0; i < totalLen; i++)
-        {
-            printf("\n--- CHECKING NOTE %d OF %d (PITCH %s, MIDI %d, LENGTH %d) ---\n", i, totalLen - 1, recPitches[i], recMidiPitches[i], recLengths[i]);
-            int upperPossibility = 0;
-            float upperNoteLenReq = 0.0f;
-            int noteType = getNoteType(recLengths[i], beatsPerSec / frameTime, &upperPossibility, &upperNoteLenReq);
-            
-            if (upperPossibility && i < totalLen - 1)
-            {
-                int nextNoteLen = recLengths[i + 1];
-                
-                if ((float)nextNoteLen > upperNoteLenReq - (float)recLengths[i])
-                {
-                    printf("--> (Adjusting to upper value)");
-                    noteType = upperPossibility;
-                }
-            }
-
-            if (strcmp(recPitches[i], "N/A") != 0)
-            {                
-                midiTrackAddNote(midiOutput, track, recMidiPitches[i], noteType, MIDI_VOL_HALF, TRUE, FALSE);
-            }
-        }*/
+        // Apply quantisation
+        float minPerSec = crotchetLen / quantisationFactor;
         
+        printf("\n[CROTCHET LEN: %f s \t QUANTISATION FACTOR NOTE LEN: %f s]\n", crotchetLen, minPerSec);        
         
         for (int i = 0; i < totalLen; i++)
         {
+            int tempLen = recLengths[i];
+            
+            // If next note is silence, combine with current note for improved rhythmic
+            // accuracy.
+            //
+            // This does not, however, capture performer articulation necessarily accurately,
+            // due to not displaying rests - but we are making a compromise for now.
+            if (i < totalLen - 1)
+            {
+                if (strcmp(recPitches[i+1], "N/A") == 0)
+                {
+                    tempLen += recLengths[i+1];
+                }
+            }
+            
             // Get note length by multiplying the duration of the frame
             // by the number of frames the note persists for, then rounding
             // this to (for now) the nearest half-note (quaver).
-            float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            //float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            float noteLen = (float)round((frameTime * tempLen) / minPerSec) * minPerSec;
+            
             
             // For now - in case it rounds down to 0
             if (noteLen == 0.0f)
             {
-                noteLen = minimumNoteDur;
+                noteLen = minPerSec;
             }
             
             // If not silence
@@ -740,18 +680,18 @@ void outputMidi(float frameTime)
             {
                 printf("\n====\nWriting %s (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, beatsPerSec, noteLen);
                 
-                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, beatsPerSec), MIDI_VOL_HALF, TRUE, FALSE);
+                midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, crotchetLen), MIDI_VOL_HALF, TRUE, FALSE);
             }
-            else
+            /*else
             {
                 // Not invalid length of silence
                 if (recLengths[i] > 1)
                 {
-                    printf("\n====\nWriting a REST (NOTE LEN %f)\n", noteLen);
+                    printf("\n====\nWriting a REST (NOTE LEN %d, ROUNDED %f)\n", recLengths[i], noteLen);
                     
                     midiTrackAddRest(midiOutput, track, getNoteType(noteLen, beatsPerSec), FALSE);
                 }
-            }
+            }*/
         }
         
         midiFileClose(midiOutput);
@@ -838,6 +778,8 @@ void convertToComplexArray(float* samples, fftwf_complex* complex, int length)
 float calcMagnitude(float real, float imaginary)
 {
     float magnitude = sqrt(real * real + imaginary * imaginary);
+
+    if (magnitude == 0.0f) magnitude = 1.0f;
     
     return (magnitude);
 }
@@ -920,7 +862,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     static int tempNoteBuf[20];
     static int tempNoteCount[20];
     
-    // Reset static values if a new recording
+    // Reset static values if a new recording/upload
     if (firstRun)
     {
         prevAmplitude = 0.0f;
@@ -1299,56 +1241,21 @@ void saveOverlappedSamples(const float* samples, float* overlapPrev, int len)
 }
 
 // Overlap the windows at 50%
-void overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun)
+void overlapWindow(const float* nextSamples, const float* overlapPrev, float* newSamples, int len)
 {
-    if ((*firstRun))
+    // On all other runs - first half should be the current samples
+    // averaged with the second half of the previous set of samples,
+    // and the second half should be the current samples averaged with
+    // the first half of the next set of samples
+    for (int i = 0; i < len / 2; i++)
     {
-        // If the first run - first half is just the samples as is,
-        // second half is the second half of the samples averaged with
-        // the first half of the next set of samples for 50% overlap
-        for (int i = 0; i < len / 2; i++)
-        {
-            newSamples[i] = samples[i];
-        }
-
-        for (int i = len / 2; i < len; i++)
-        {
-            newSamples[i] = (float)(nextSamples[i - len/2] + samples[i]) / 2.0f;
-        }
-
-        (*firstRun) = false;
+        newSamples[i] = overlapPrev[i];
     }
-    else if (lastRun)
-    {
-        // If the last run - first half is the first half of the samples
-        // averaged with the last half of the previous set of samples,
-        // the second half is the just the remainder of the samples
-        for (int i = 0; i < len / 2; i++)
-        {
-            newSamples[i] = (float)(overlapPrev[i] + samples[i]) / 2.0f;
-        }
 
-        for (int i = len / 2; i < len; i++)
-        {
-            newSamples[i] = samples[i];
-        }
+    for (int i = len / 2; i < len; i++)
+    {
+        newSamples[i] = nextSamples[i - len/2];
     }
-    else
-    {
-        // On all other runs - first half should be the current samples
-        // averaged with the second half of the previous set of samples,
-        // and the second half should be the current samples averaged with
-        // the first half of the next set of samples
-        for (int i = 0; i < len / 2; i++)
-        {
-            newSamples[i] = (float)(overlapPrev[i] + samples[i]) / 2.0f;
-        }
-
-        for (int i = len / 2; i < len; i++)
-        {
-            newSamples[i] = (float)(nextSamples[i - len / 2] + samples[i]) / 2.0f;
-        }
-    }    
 }
 
 // Main function for processing microphone data.
@@ -1572,6 +1479,9 @@ void* record(void* args)
     float frameTime = timeSecs / numFrames;
 
     printf("\n*** Starting sample analysis (num frames = %d) ***\n", numFrames);
+
+    int iterations = 0;
+
     // Loop through all of the samples, frame by frame
     for (int i = 0; i < numFrames; i++)
     {
@@ -1590,7 +1500,7 @@ void* record(void* args)
             {
                 nextSamplePtrs[j] = nextSamples + j * WINDOW_SIZE;
             }            
-        }    
+        }
 
         if (firstRun)
         {
@@ -1601,6 +1511,13 @@ void* record(void* args)
 
             // Copy next set of samples to be used on the next cycle
             memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
+
+            // Iterations = 2. First we process the samples normally (N - WINDOW_SIZE),
+            // then again for the overlapped samples in between (at a 50% overlap).
+            //
+            // This entails taking the second half of our current samples and combining
+            // them with the first half of the next
+            iterations = 2;
         }
         // Else if not the last run
         else if (i < numFrames - 1)
@@ -1612,6 +1529,8 @@ void* record(void* args)
 
             // Copy next acquired samples to be used on the next cycle
             memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
+
+            iterations = 2;
         }
         // Last run
         else
@@ -1620,6 +1539,9 @@ void* record(void* args)
             memcpy(samples, savedNextSamples, sizeof(samples));
 
             memset(nextSamples, 0, sizeof(nextSamples));
+
+            // Iterations = 1. For the last sample we have, just process it normally
+            iterations = 1;
         }
         
         /*Overlap the window
@@ -1629,58 +1551,78 @@ void* record(void* args)
         * half of the new window of samples continuously each FFT cycle
         * to reduce potential data loss brought about by windowing.
         */
-        overlapWindow(samples, nextSamples, overlapPrev, newSamples, WINDOW_SIZE, &firstRun, (i < numFrames - 1));
+        //overlapWindow(samples, nextSamples, overlapPrev, newSamples, WINDOW_SIZE, &firstRun, (i < numFrames - 1));
         
         // Save the second half of the samples to be used in the next FFT
         // cycle for overlapping
         saveOverlappedSamples(samples, overlapPrev, WINDOW_SIZE);
-        
-        /*Low-pass the data
-        * -----------------
-        * Remove unwanted/higher frequencies or noise from the sample
-        * collected from the microphone.
-        * 
-        * For now, limit the range to three octaves from C3-C6, so a frequency
-        * range of 130.8 Hz - 1108.73 Hz
-        */
-        //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
-        lowPassData(newSamples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
-        
-        /*Apply windowing function (Hann)
-        * -------------------------------
-        * Reduces spectral leakage.
-        * The FFT expects a finite, periodic signal with an integer number of 
-        * periods to analyse.
-        * 
-        * Realistically this may not be the case on the segment of data analysed, 
-        * as the data is segmented by WINDOW_SIZE and may not be cut off evenly.
-        * This is how spectral leakage occurs.
-        * 
-        * The waveform we get likely won't be periodic and will be a non-continuous 
-        * signal, so to circumvent this we apply a windowing function 
-        * to reduce the amplitude of the discontinuities in the waveform (the edges).
-        */
-        setWindow(window, lowPassedSamples, WINDOW_SIZE);
-        
-        // Convert to FFTW3 complex array
-        convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
-        
-        // Carry out the FFT
-        fftwf_execute(plan);
-        
-        // Get new array size for downsampled data - 5 harmonics considered
-        dsSize = getArrayLen(WINDOW_SIZE, 5);
-        float dsResult[dsSize];
-        
-        // Carry out onset detection from FFT output, using a complex-domain deviation
-        // onset detection function
-        onset = onsetsds_process(&ods, outp);
-        
-        // Get HPS
-        harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
-        
-        // Find peaks
-        hps_getPeak(dsResult, dsSize, onset);
+
+        for (int j = 0; j < iterations; j++)
+        {
+            if (j == 0)
+            {
+                // If on one iteration, process samples normally by just
+                // copying them as is into newSamples
+                memcpy(newSamples, samples, sizeof(newSamples));
+            }
+            else
+            {
+                // If doing a second iteration for overlapped samples, carry out
+                // the overlap (50% of current samples, 50% of next) and process
+                overlapWindow(nextSamples, overlapPrev, newSamples, WINDOW_SIZE);
+            }
+
+            /*Low-pass the data
+            * -----------------
+            * Remove unwanted/higher frequencies or noise from the sample
+            * collected from the microphone.
+            *
+            * Limit the range to three octaves from C3-C6, so a frequency
+            * range of 130.8 Hz - 1108.73 Hz
+            */
+            //lowPassData(samples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+            lowPassData(newSamples, lowPassedSamples, WINDOW_SIZE, MAX_FREQUENCY);
+
+            /*Apply windowing function (Hann)
+            * -------------------------------
+            * Reduces spectral leakage.
+            * The FFT expects a finite, periodic signal with an integer number of
+            * periods to analyse.
+            *
+            * Realistically this may not be the case on the segment of data analysed,
+            * as the data is segmented by WINDOW_SIZE and may not be cut off evenly.
+            * This is how spectral leakage occurs.
+            *
+            * The waveform we get likely won't be periodic and will be a non-continuous
+            * signal, so to circumvent this we apply a windowing function
+            * to reduce the amplitude of the discontinuities in the waveform (the edges).
+            * 
+            * This is why we use overlapping windows (at 50%) - to mitigate the loss of
+            * data at the edges of the window, and retain as much of the original time
+            * signal as possible.
+            */
+            setWindow(window, lowPassedSamples, WINDOW_SIZE);
+
+            // Convert to FFTW3 complex array
+            convertToComplexArray(lowPassedSamples, inp, WINDOW_SIZE);
+
+            // Carry out the FFT
+            fftwf_execute(plan);
+
+            // Get new array size for downsampled data - 5 harmonics considered
+            dsSize = getArrayLen(WINDOW_SIZE, 5);
+            float dsResult[dsSize];
+
+            // Carry out onset detection from FFT output, using a complex-domain deviation
+            // onset detection function
+            onset = onsetsds_process(&ods, outp);
+
+            // Get HPS
+            harmonicProductSpectrum(outp, dsResult, WINDOW_SIZE);
+
+            // Find peaks
+            hps_getPeak(dsResult, dsSize, onset);
+        }       
     }
     
     printf("\n*** Closing .wav file ***\n");
@@ -1712,6 +1654,8 @@ void* record(void* args)
     pthread_mutex_lock(&procLock);
     processing = 0; // Indicate to main (GTK) thread that processing has now stopped
     pthread_mutex_unlock(&procLock);
+    
+    printf("\nLeaving record() function\n");
 }
 
 void activate(GtkApplication* app, gpointer data)
@@ -1742,7 +1686,14 @@ void activate(GtkApplication* app, gpointer data)
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "1024");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "2048");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "4096");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "8192");
+
+    // Set up quantisation factor selection combo box
+    inputData.quantisation = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/1 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/2 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/4 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/8 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/16 note");
 
     // Time signature & tempo entry fields
     inputData.time      = gtk_spin_button_new_with_range(2, 16, 1);
@@ -1759,6 +1710,7 @@ void activate(GtkApplication* app, gpointer data)
     GtkWidget* tempoLbl         = gtk_label_new("Tempo (BPM): ");
     GtkWidget* keyLbl           = gtk_label_new("Key signature: ");
     GtkWidget* fileLocLbl       = gtk_label_new("File output location: ");
+    GtkWidget* quantiseLbl      = gtk_label_new("Quantisation factor: ");
     
     // Label that will display any warnings to the user
     inputData.msgLbl            = gtk_label_new("");
@@ -1770,6 +1722,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(inputData.msgLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fftSizeLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(quantiseLbl), 1.0);
     
     // Set up the MIDI notes to correspond with list of pitches
     setMidiNotes();
@@ -1788,7 +1741,7 @@ void activate(GtkApplication* app, gpointer data)
     gtk_window_set_position(GTK_WINDOW(pWindow), GTK_WIN_POS_CENTER);
     gtk_window_set_default_size(GTK_WINDOW(pWindow), 1000, 800);
     gtk_window_set_title(GTK_WINDOW(pWindow), "Sheet Music Automation");
-    gtk_window_set_resizable(GTK_WINDOW(pWindow), FALSE); // Non-resizable for now
+    gtk_window_set_resizable(GTK_WINDOW(pWindow), TRUE); // Is resizable
 
     gtk_grid_set_column_spacing(GTK_GRID(pGrid), 16);
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 16);
@@ -1796,37 +1749,35 @@ void activate(GtkApplication* app, gpointer data)
 
     gtk_grid_set_row_spacing(GTK_GRID(pGrid), 50);
 
-    // Add grid to the created window
+    // Add box containing the grid to the created window
     gtk_container_add(GTK_CONTAINER(pWindow), pBox);
-    gtk_container_add(GTK_CONTAINER(pWindow), pGrid);
 
     // Attach textboxes, labels and button to grid
     gtk_grid_attach(GTK_GRID(pGrid), timeLbl, 1, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), timeDenomLbl, 4, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), tempoLbl, 1, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), keyLbl, 1, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), fileLocLbl, 1, 5, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), fftSizeLbl, 4, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), quantiseLbl, 4, 3, 1, 1);
 
     gtk_grid_attach(GTK_GRID(pGrid), inputData.time, 2, 1, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.timeDenom, 5, 1, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.tempo, 2, 2, 1, 1);    
     gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 4, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 4, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.quantisation, 5, 3, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), inputData.fftSize, 5, 2, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 5, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), uploadBtn, 3, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 6, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), uploadBtn, 3, 6, 1, 1);
     
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 2, 6, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 2, 7, 1, 1);
 
     // Connect click events to callback functions
     g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), &inputData);
     g_signal_connect(uploadBtn, "clicked", G_CALLBACK(processUpload), &inputData);
-
-    // Make the X button close the window correctly & end program
-    g_signal_connect(pWindow, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     // Show window
     gtk_widget_show_all(pWindow);
