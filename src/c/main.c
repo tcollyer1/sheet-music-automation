@@ -293,11 +293,9 @@ void processUpload(GtkWidget* widget, gpointer data)
 
     // Get quantisation factor
     char* tempQuant = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->quantisation));
-
-    printf("\nBefore segfault\n");       
+       
     // Get tempo
-    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo)); // Segmentation fault here @ size 8192 FFT
-    printf("\nAfter segfault\n");
+    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
         
     // Get time signature
     beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
@@ -1506,7 +1504,6 @@ void* record(void* args)
             // again for the next cycle's samples for overlapping
             tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
             tinywav_read_f(&tw, nextSamplePtrs, WINDOW_SIZE);
-
             // Copy next set of samples to be used on the next cycle
             memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
 
