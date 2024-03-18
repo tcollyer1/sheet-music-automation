@@ -471,7 +471,7 @@ int getTimeSigDenom(const char* selected)
     }
     else if (strcmp(selected, "Quavers") == 0)
     {
-        denom = MIDI_NOTE_QUAVER;
+        denom = 256;
     }
     
     return (denom);
@@ -1178,7 +1178,6 @@ void lowPassData(float* input, float* output, int length, int cutoff)
     
     for (int i = 1; i < length; i++)
     {
-        //output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
         output[i] = alpha * input[i] + (1 - alpha) * output[i - 1];
     }
 }
