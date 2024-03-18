@@ -40,13 +40,13 @@ static int      running     = 0;
 static int      processing  = 0;
 static int      firstRun    = 0;
 
-bool newRecording = false;
-bool isUpload = false;
+static bool newRecording = false;
+static bool isUpload = false;
 
 //////////////////////////////////////////////////////////////////////////////
 // Global GTK widgets/general data for manipulation from different functions
-GtkWidget*      recBtn      = NULL; // Record button
-GtkWidget*      uploadBtn   = NULL; // Upload file button
+static GtkWidget*      recBtn      = NULL; // Record button
+static GtkWidget*      uploadBtn   = NULL; // Upload file button
 
 // Struct for storing user's inputted data
 typedef struct
@@ -62,21 +62,21 @@ typedef struct
     GtkWidget*      quantisation;
 } FIELD_DATA;
 
-static int      tempoVal            = 0;
+static  int             tempoVal            = 0;
 
-tMIDI_KEYSIG    keySigVal           = keyCMaj;
+static  tMIDI_KEYSIG    keySigVal           = keyCMaj;
 
-static int      beatsPerBar         = 0;
-static int      noteDiv             = 0;
+static  int             beatsPerBar         = 0;
+static  int             noteDiv             = 0;
 
-static float    quantisationFactor  = 1.0f;
+static  float           quantisationFactor  = 1.0f;
 
-static char     fileOutputLoc[500];
-static char     wavOutputLoc[500];
+static  char            fileOutputLoc[500];
+static  char            wavOutputLoc[500];
 
-static char     wavUploadLoc[500];
+static  char            wavUploadLoc[500];
 
-static int      WINDOW_SIZE         = 2048;
+static  int             WINDOW_SIZE         = 2048;
 
 //////////////////////////////////////////////////////////////////////////////
 // Processing thread (to not freeze main GUI thread)
@@ -94,15 +94,6 @@ int         recLengths[MAX_NOTES];
 int         recMidiPitches[MAX_NOTES];
 static int  totalLen = 0;
 static int  bufIndex = 0;
-
-//////////////////////////////////////////////////////////////////////////////
-// OnsetsDS struct - onset detection
-OnsetsDS ods;
-
-//////////////////////////////////////////////////////////////////////////////
-// For reading from/writing to .wav to save user recording for 
-// analysis
-TinyWav tw;
 
 //////////////////////////////////////////////////////////////////////////////
 // Establish notes and corresponding
@@ -302,11 +293,9 @@ void processUpload(GtkWidget* widget, gpointer data)
 
     // Get quantisation factor
     char* tempQuant = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(d->quantisation));
-
-    printf("\nBefore segfault\n");       
+       
     // Get tempo
-    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo)); // Segmentation fault here @ size 8192 FFT
-    printf("\nAfter segfault\n");
+    tempoVal = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->tempo));
         
     // Get time signature
     beatsPerBar = (int)gtk_spin_button_get_value(GTK_SPIN_BUTTON(d->time));
@@ -482,7 +471,7 @@ int getTimeSigDenom(const char* selected)
     }
     else if (strcmp(selected, "Quavers") == 0)
     {
-        denom = MIDI_NOTE_QUAVER;
+        denom = 256;
     }
     
     return (denom);
@@ -1189,7 +1178,6 @@ void lowPassData(float* input, float* output, int length, int cutoff)
     
     for (int i = 1; i < length; i++)
     {
-        //output[i] = output[i-1] + (alpha * (input[i] - output[i-1]));
         output[i] = alpha * input[i] + (1 - alpha) * output[i - 1];
     }
 }
@@ -1285,6 +1273,13 @@ void* record(void* args)
     fftwf_complex*   inp;
     fftwf_complex*   outp;
     fftwf_plan       plan;   // Contains all data needed for computing FFT
+
+    // For reading from/writing to .wav to save user recording for 
+    // analysis
+    TinyWav tw;
+
+    // OnsetsDS struct - onset detection
+    OnsetsDS ods;
     
     inp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
     outp = (fftwf_complex*)fftwf_malloc(sizeof(fftwf_complex) * WINDOW_SIZE);
@@ -1508,7 +1503,6 @@ void* record(void* args)
             // again for the next cycle's samples for overlapping
             tinywav_read_f(&tw, samplePtrs, WINDOW_SIZE);
             tinywav_read_f(&tw, nextSamplePtrs, WINDOW_SIZE);
-
             // Copy next set of samples to be used on the next cycle
             memcpy(savedNextSamples, nextSamples, sizeof(savedNextSamples));
 
@@ -1637,7 +1631,7 @@ void* record(void* args)
     checkError(err);*/
     
     // Outputs everything in the buffer
-    displayBufferContent();
+    //displayBufferContent();
     printf("\n(Each frame takes %f secs)\n", frameTime);
     
     // Output to MIDI file
@@ -1663,45 +1657,48 @@ void activate(GtkApplication* app, gpointer data)
     GtkWidget* pWindow          = gtk_application_window_new(app);
     
     // Struct to hold user input data
-    static FIELD_DATA inputData;
+    FIELD_DATA* inputData;
+
+    inputData = g_new(FIELD_DATA, 1);
     
     // File upload point - instead of recording
-    inputData.fileUpload = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
+    inputData->fileUpload = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_OPEN);
     
     // Set up the list of key signature selection
-    inputData.key = gtk_combo_box_text_new();
+    inputData->key = gtk_combo_box_text_new();
     for (int i = 0; i < OCTAVE_SIZE * 2; i++)
     {
-        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.key), NULL, keys[i]);
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->key), NULL, keys[i]);
     }
     
     // Set up time signature (note division) selection combo box
-    inputData.timeDenom = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Quavers");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Crotchets");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.timeDenom), NULL, "Minims");
+    inputData->timeDenom = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->timeDenom), NULL, "Quavers");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->timeDenom), NULL, "Crotchets");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->timeDenom), NULL, "Minims");
     
     // Set up FFT size selection combo box
-    inputData.fftSize = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "1024");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "2048");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.fftSize), NULL, "4096");
+    inputData->fftSize = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->fftSize), NULL, "1024");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->fftSize), NULL, "2048");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->fftSize), NULL, "4096");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->fftSize), NULL, "8192");
 
     // Set up quantisation factor selection combo box
-    inputData.quantisation = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/1 note");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/2 note");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/4 note");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/8 note");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData.quantisation), NULL, "1/16 note");
+    inputData->quantisation = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->quantisation), NULL, "1/1 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->quantisation), NULL, "1/2 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->quantisation), NULL, "1/4 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->quantisation), NULL, "1/8 note");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(inputData->quantisation), NULL, "1/16 note");
 
     // Time signature & tempo entry fields
-    inputData.time      = gtk_spin_button_new_with_range(2, 16, 1);
-    inputData.tempo     = gtk_spin_button_new_with_range(10, 200, 1);
+    inputData->time      = gtk_spin_button_new_with_range(2, 16, 1);
+    inputData->tempo     = gtk_spin_button_new_with_range(10, 200, 1);
     
     // File output location
     //GtkWidget* fileLoc          = gtk_entry_new();
-    inputData.fileOutput = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_SAVE);
+    inputData->fileOutput = gtk_file_chooser_widget_new(GTK_FILE_CHOOSER_ACTION_SAVE);
 
     // Labels
     GtkWidget* timeLbl          = gtk_label_new("Time signature (beats/bar): ");
@@ -1713,14 +1710,14 @@ void activate(GtkApplication* app, gpointer data)
     GtkWidget* quantiseLbl      = gtk_label_new("Quantisation factor: ");
     
     // Label that will display any warnings to the user
-    inputData.msgLbl            = gtk_label_new("");
+    inputData->msgLbl            = gtk_label_new("");
 
     gtk_label_set_xalign(GTK_LABEL(timeLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(timeDenomLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(tempoLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(keyLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fileLocLbl), 1.0);
-    gtk_label_set_xalign(GTK_LABEL(inputData.msgLbl), 1.0);
+    gtk_label_set_xalign(GTK_LABEL(inputData->msgLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(fftSizeLbl), 1.0);
     gtk_label_set_xalign(GTK_LABEL(quantiseLbl), 1.0);
     
@@ -1761,23 +1758,23 @@ void activate(GtkApplication* app, gpointer data)
     gtk_grid_attach(GTK_GRID(pGrid), fftSizeLbl, 4, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), quantiseLbl, 4, 3, 1, 1);
 
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.time, 2, 1, 1, 1);    
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.timeDenom, 5, 1, 1, 1);    
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.tempo, 2, 2, 1, 1);    
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.key, 2, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileOutput, 2, 5, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.fileUpload, 3, 5, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.quantisation, 5, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.fftSize, 5, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->time, 2, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->timeDenom, 5, 1, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->tempo, 2, 2, 1, 1);    
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->key, 2, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->fileOutput, 2, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->fileUpload, 3, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->quantisation, 5, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->fftSize, 5, 2, 1, 1);
 
     gtk_grid_attach(GTK_GRID(pGrid), recBtn, 2, 6, 1, 1);
     gtk_grid_attach(GTK_GRID(pGrid), uploadBtn, 3, 6, 1, 1);
     
-    gtk_grid_attach(GTK_GRID(pGrid), inputData.msgLbl, 2, 7, 1, 1);
+    gtk_grid_attach(GTK_GRID(pGrid), inputData->msgLbl, 2, 7, 1, 1);
 
     // Connect click events to callback functions
-    g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), &inputData);
-    g_signal_connect(uploadBtn, "clicked", G_CALLBACK(processUpload), &inputData);
+    g_signal_connect(recBtn, "clicked", G_CALLBACK(toggleRecording), inputData);
+    g_signal_connect(uploadBtn, "clicked", G_CALLBACK(processUpload), inputData);
 
     // Show window
     gtk_widget_show_all(pWindow);
