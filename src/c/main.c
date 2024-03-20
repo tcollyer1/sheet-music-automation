@@ -667,7 +667,7 @@ void outputMidi(float frameTime)
             // If not silence
             if (strcmp(recPitches[i], "N/A") != 0)
             {
-                printf("\n====\nWriting %s (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f) * %f = %f)\n", recPitches[i], recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, beatsPerSec, noteLen);
+                printf("\n====\nWriting (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f) * %f = %f)\n", recMidiPitches[i], frameTime, recLengths[i], minimumNoteDur, minimumNoteDur, beatsPerSec, noteLen);
                 
                 midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, crotchetLen), MIDI_VOL_HALF, TRUE, FALSE);
             }
@@ -848,8 +848,8 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     
     float threshold = 0.3f;
     
-    static int tempNoteBuf[20];
-    static int tempNoteCount[20];
+    static int tempNoteBuf[100];
+    static int tempNoteCount[100];
     
     // Reset static values if a new recording/upload
     if (firstRun)
@@ -975,7 +975,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         }
         else
         {         
-            if (noteLen < 20)
+            if (noteLen < 100)
             {
                 tempNoteBuf[noteLen] = curMidiNote;
                 tempNoteCount[noteLen] = -1;
@@ -1004,7 +1004,6 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     {
         silenceLen++;
         lastNoteLen = noteLen;
-        //printf("\n[SILENCE]");
     }
     
     // ------------------------------------------------------
@@ -1031,9 +1030,12 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     // If a new note (not the first) after another note, add the last note vals to buffers
     else if (newNote)
     {
+        // If note len > 100, only account for first 100 collected pitches (save on memory)
+        int iter = lastNoteLen > 100 ? 100 : lastNoteLen;
+
         // Where the detected frequency can sometimes fluctuate,
         // get the most common detected note
-        for (int i = 0; i < lastNoteLen; i++)
+        for (int i = 0; i < iter; i++)
         {
             int count = 1;
             
@@ -1054,8 +1056,8 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         
         int highest = 0;
         int highestIdx = 0;
-        
-        for (int i = 0; i < lastNoteLen; i++)
+
+        for (int i = 0; i < iter; i++)
         {
             if (tempNoteCount[i] > highest)
             {
