@@ -616,13 +616,6 @@ void outputMidi(float frameTime)
         
         // Set time signature.
         midiSongAddSimpleTimeSig(midiOutput, track, beatsPerBar, noteDiv);
-    
-        // Get the length of time one beat (crotchet) will account for given
-        // the tempo
-        float beatsPerSec = (float)tempoVal / 60;
-        
-        // Fastest note to detect is quavers, FOR NOW.
-        float minimumNoteDur = beatsPerSec / 2;
         
         // Get the minimum note length we're detecting using the length (secs) of a crotchet
         float crotchetLen = 60.0f / (float)tempoVal;
@@ -651,8 +644,8 @@ void outputMidi(float frameTime)
             
             // Get note length by multiplying the duration of the frame
             // by the number of frames the note persists for, then rounding
-            // this to (for now) the nearest half-note (quaver).
-            //float noteLen = ((float)round((frameTime * recLengths[i]) / minimumNoteDur) * minimumNoteDur) * beatsPerSec;
+            // this to the nearest smallest note value we want to detect - this
+            // is the quantisation factor.
             float noteLen = (float)round((frameTime * tempLen) / minPerSec) * minPerSec;
             
             
@@ -666,8 +659,6 @@ void outputMidi(float frameTime)
             if (strcmp(recPitches[i], "N/A") != 0)
             {
                 printf("\n====\nWriting (MIDI PITCH %d, ((float)round((%f * %d) / %f) * %f = %f)\n", recMidiPitches[i], frameTime, tempLen, minPerSec, minPerSec, noteLen);
-                
-                //printf("\ntotalLen = %d, i = %d, note\n", totalLen, i);
                 midiTrackAddNote(midiOutput, track, recMidiPitches[i], getNoteType(noteLen, crotchetLen, minPerSec), MIDI_VOL_HALF, TRUE, FALSE);
 
             }
