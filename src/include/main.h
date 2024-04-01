@@ -45,7 +45,7 @@ void 	pitchesAdd(char* pitch, int length, int midiNote);
 void 	displayBufferContent();
 
 // MIDI
-int 	getNoteType(float noteDur, float qNoteLen);
+int 	getNoteType(float noteDur, float qNoteLen, float minPerSec);
 void 	setMidiNotes();
 void 	outputMidi(float frameTime);
 float	getQuantVal(const char* input);
