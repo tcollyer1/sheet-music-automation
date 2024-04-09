@@ -485,7 +485,7 @@ int getNoteType(float noteDur, float qNoteLen, float minPerSec)
     
     int noteType = 0;
     
-    if (noteDur == 0.0f)
+    if (noteDur <= 0.0f)
     {
         // Round to next smallest note
         noteDur = minPerSec;
