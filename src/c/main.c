@@ -2,7 +2,8 @@
 #include <stdio.h>
 #include <math.h>       // M_PI, sqrt, sin, cos
 #include <pthread.h>
-#include <sys/stat.h>
+#include <sys/stat.h>   // Acquiring information about .wav files to calculate number of
+                        // FFT processing frames
 
 #include "../include/main.h"
 #include "../include/onsetsds.h"
@@ -175,17 +176,6 @@ void toggleRecording(GtkWidget* widget, gpointer data)
         pthread_mutex_lock(&runLock);
         running = 0;
         pthread_mutex_unlock(&runLock);
-    
-        // Should ideally wait for processing to be 0, then cancel the thread,
-        // but this causes “Trace/breakpoint trap” error
-        // Only thing omitting this does is not kill the thread
-        
-        /*threadResult = pthread_cancel(procTask);
-        
-        if (threadResult != 0)
-        {
-            g_error("\nERROR: Failed to stop thread!\n");
-        }*/
         
         gtk_button_set_label(GTK_BUTTON(recBtn), "Record");
     }
@@ -398,34 +388,16 @@ void pitchesAdd(char* pitch, int length, int midiNote)
 {    
     strcpy(recPitches[bufIndex], pitch);
     recLengths[bufIndex] = length;
-    //printf("\n[!] Adding %s (%d) of length %d to position %d\n", pitch, midiNote, length, bufIndex);
     recMidiPitches[bufIndex] = midiNote;
     
     bufIndex++; // Make sure to increase buffer index for next value
     totalLen = bufIndex;
-    
-    // Need to handle this properly:
-    // a) Immediately stop running the recording loop here
-    // b) Change button display back to "Record"
-    // c) Carry out MIDI translation on buffer content as normal
+
     if (totalLen == MAX_NOTES)
     {
         printf("\n[!] STOPPING: Buffer full!\n");
         running = 0;
     }
-}
-
-void displayBufferContent()
-{
-    printf("\n--- CONTENT OF OUTPUT BUFFERS: ---");
-    
-    for (int i = 0; i < totalLen; i++)
-    {
-        printf("\nNOTE: %s | LENGTH: %d", recPitches[i], recLengths[i]);
-    }
-    printf("\ntotalLen = %d", totalLen);
-    
-    printf("\n");
 }
 
 // Assign MIDI note values per pitch C3-C6
@@ -434,7 +406,7 @@ void setMidiNotes()
     // C3 is 36 in the MIDI library we're using.
     // However other sources suggest C3 should be 48, 
     // which is what C4 is set to.
-    // The MIDI output is also an octave lower than expected.
+    // The MIDI (sheet) output is also an octave lower than expected when testing.
     int c3 = MIDI_NOTE_C4;
     
     int midiVal = c3;
@@ -470,7 +442,8 @@ int getTimeSigDenom(const char* selected)
     }
     else if (strcmp(selected, "Quavers") == 0)
     {
-        denom = 256;
+        denom = 256; // MIDI_NOTE_QUAVER (value 192) actually makes the time signature denominator 16th 
+                     // notes (semiquavers), not quavers. 256 correctly sets 8th notes (quavers)
     }
     
     return (denom);
@@ -679,7 +652,6 @@ void checkError(PaError err)
     if (err != paNoError)
     {
         printf("PortAudio error: %s\n", Pa_GetErrorText(err));
-        //exit(-1); // Aborts program when user stops recording, unsure why as this if condition is never met?
     }
 }
 
@@ -814,7 +786,7 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
     static float prevAmplitude = 0.0f;  // Last recorded amplitude
     static int noteLen = 0;             // Length of current note (number of iterations the "same note"
                                         // has been tracked)
-    static int silenceLen = 0;          // Length of silence (indicate rests)
+    static int silenceLen = 0;          // Length of silence (no recognisable note being played)
     static char prevPitch[4];
     static int lastPeakBin = 0;
     char* curPitch;
@@ -854,37 +826,6 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
             peakBinNo = i;
         }
     }
-    
-    // ------------------------------------------------------
-    // In progress - to aid with octave errors
-    /*if (otherPeakFreq < (peakFreq / 2) + threshold 
-    && otherPeakFreq > (peakFreq / 2) - threshold
-    && fabs(highest - last) <= 0.33f)
-    {
-        printf("\nPeak could also be %f", otherPeakFreq);
-    }*/
-    // Also try this
-    // ------------------------------------------------------    
-    /*int actualMax = 1;
-    int maxFreq = peakBinNo * 3 / 4; // Search up to 3/4 of the identified peak's bins (?)
-
-    for (int i = 2; i < maxFreq; i++)
-    {
-        if (dsResult[i] > dsResult[actualMax])
-        {
-            actualMax = i;
-        }
-    }
-
-    if (abs(actualMax * 2 - peakBinNo) < 4)
-    {
-        if (dsResult[actualMax] / dsResult[peakBinNo] > 0.2f && actualMax * BIN_SIZE > MIN_FREQUENCY && dsResult[actualMax] >= NOISE_FLOOR)
-        {
-            //peakBinNo = actualMax;
-            printf("\n[!] NEW PEAK BIN SET\n");
-        }
-    }*/
-    // ------------------------------------------------------
     
     peakFreq = peakBinNo * BIN_SIZE;
     
@@ -959,12 +900,11 @@ void hps_getPeak(float* dsResult, int len, bool isOnset)
         prevAmplitude = highest;        
     }
     // Implies recording has just started - don't record silence until first note played
-    // to prevent lots of rests at the start
     else if (prevAmplitude == 0.0f)
     {
         // Do nothing
     }
-    // Else silence detected (rest)
+    // Else silence detected
     else
     {
         silenceLen++;
@@ -1101,40 +1041,6 @@ float interpolate(float first, float last)
     return (result);
 }
 
-// Gets the peak magnitude from the computed FFT output
-/*void getPeak(fftwf_complex* result, int fftLen, float* avgFreq, int* count)
-{
-    float highest = 0.0f;
-    float current = 0.0f;
-    int peakBinNo = 0;
-    
-    float peakFreq = 0.0f;
-    
-    for (int i = 0; i < fftLen; i++)
-    {
-        current = calcMagnitude(result[i][REAL], result[i][IMAG]);
-        
-        if (current > highest && i * BIN_SIZE > MIN_FREQUENCY)
-        {
-            highest = current;
-            peakBinNo = i;
-        }
-    }
-    
-    peakFreq = peakBinNo * BIN_SIZE;
-
-    printf("\nPeak frequency obtained: %f\n", peakFreq);
-    
-    // Estimate the pitch based on the highest frequency reported
-    getPitch(&peakFreq);
-    
-    if (peakFreq != 0.0f)
-    {
-        (*avgFreq) += peakFreq;
-        (*count)++;
-    }
-}*/
-
 // Simple first order low pass filter with a cutoff frequency
 void lowPassData(float* input, float* output, int length, int cutoff)
 {
@@ -1182,7 +1088,7 @@ void configureInParams(int inpDevice, PaStreamParameters* i)
     
     printf("Input device selected: %s (device %d)\n", Pa_GetDeviceInfo(inpDevice)->name, inpDevice);
 
-    i->channelCount = CHANNELS; // 1
+    i->channelCount = CHANNELS; // 1 (mono)
 
     i->device = inpDevice;
     i->hostApiSpecificStreamInfo = NULL;
@@ -1264,7 +1170,7 @@ void* record(void* args)
     // Prepare window
     setUpHannWindow(window, WINDOW_SIZE);
     
-    // This will give us the total number of samples in our .wav
+    // This will store the total number of samples in our .wav
     int totalSamples = 0;
     
     int numFrames = 0;  // Number of times samples are collected
@@ -1333,7 +1239,7 @@ void* record(void* args)
             NULL, // Output parameters - not outputting data, so set to null
             SAMPLE_RATE,
             WINDOW_SIZE,
-            paClipOff, // Not outputting out of range samples, don't clip?
+            paClipOff, // Not outputting out of range samples, don't clip
             NULL, // No callback function, so null
             NULL // No user data here, is processed instead below, so null
         );
@@ -1506,7 +1412,7 @@ void* record(void* args)
 
             memset(nextSamples, 0, sizeof(nextSamples));
 
-            // Iterations = 1. For the last sample we have, just process it normally
+            // Iterations = 1. For the last sample we have, just process it normally (no overlapping)
             iterations = 1;
         }
         
@@ -1558,12 +1464,12 @@ void* record(void* args)
             * This is how spectral leakage occurs.
             *
             * The waveform we get likely won't be periodic and will be a non-continuous
-            * signal, so to circumvent this we apply a windowing function
+            * signal due to the above, so to circumvent this we apply a windowing function
             * to reduce the amplitude of the discontinuities in the waveform (the edges).
             * 
-            * This is why we use overlapping windows (at 50%) - to mitigate the loss of
-            * data at the edges of the window, and retain as much of the original time
-            * signal as possible.
+            * This is also then why we use overlapping windows (at 50%) - to mitigate the loss
+            * of data at the edges of the window, and retain as much of the original time signal
+            * as possible.
             */
             setWindow(window, lowPassedSamples, WINDOW_SIZE);
 
@@ -1592,14 +1498,6 @@ void* record(void* args)
     printf("\n*** Closing .wav file ***\n");
     tinywav_close_read(&tw);
     
-    
-    // Pa_Terminate() causes a segmentation fault when called on a separate thread...
-
-    // Terminate PortAudio stream
-    /*err = Pa_Terminate();
-    printf("\nStream terminated.\n");
-    checkError(err);*/
-    
     printf("\n(Each frame takes %f secs)\n", frameTime);
     
     // Output to MIDI file
@@ -1620,6 +1518,7 @@ void* record(void* args)
     printf("\nLeaving record() function\n");
 }
 
+// This function sets up the GUI and connects buttons to other functions.
 void activate(GtkApplication* app, gpointer data)
 {
     GtkWidget* pWindow          = gtk_application_window_new(app);
