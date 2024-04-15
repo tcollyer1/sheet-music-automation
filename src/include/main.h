@@ -13,14 +13,13 @@ void 	checkError(PaError err);
 void	configureInParams(int inpDevice, PaStreamParameters* i);
 void	activate(GtkApplication* app, gpointer data);
 
-void*	record(void* args);
+void*	record(void* args); // MAIN FUNCTION. This is where the main data processing loop occurs.
 void	toggleRecording(GtkWidget* widget, gpointer data);
 
 // FFT preparation & calculation
 void 	convertToComplexArray(float* samples, fftwf_complex* complex, int length);
 
 void 	saveOverlappedSamples(const float* samples, float* overlapPrev, int len);
-//void 	overlapWindow(const float* samples, const float* nextSamples, const float* overlapPrev, float* newSamples, int len, bool* firstRun, const bool lastRun);
 void	overlapWindow(const float* nextSamples, const float* overlapPrev, float* newSamples, int len);
 
 void	lowPassData(float* input, float* output, int length, int cutoff);
@@ -42,7 +41,6 @@ int 			getTimeSigDenom(const char* selected);
 
 // Adding to output buffers
 void 	pitchesAdd(char* pitch, int length, int midiNote);
-void 	displayBufferContent();
 
 // MIDI
 int 	getNoteType(float noteDur, float qNoteLen, float minPerSec);
