@@ -16,8 +16,11 @@ The following libraries, which fall under the GNU General Public Licence (ISC Li
 
 ---
 ### How to Use
-1. In order to run the software, a Linux-based system is required (or at the very least Windows running WSL, though this does not support sound devices in general which negates the recording feature only).
-2. Git is additionally required (install using `sudo apt-get install git-all`)
+1. In order to run the software, a Linux-based system is required (or at the very least Windows running WSL, though this does not support sound devices in general which negates the recording feature **only**).
+2. Git is additionally required:
+```
+sudo apt-get install git-all
+```
 3. Clone the repository:
 ```
 git clone https://github.com/tcollyer1/sheet-music-automation.git
